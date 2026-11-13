@@ -3,14 +3,14 @@
 
 import { useState } from "react";
 import {
-  CartesianGrid,
-  Legend,
-  Line,
   LineChart,
-  ResponsiveContainer,
-  Tooltip,
+  Line,
   XAxis,
   YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
 } from "recharts";
 
 type TelemetryRow = {
@@ -27,11 +27,191 @@ type Finding = {
   exercise: string;
 };
 
-function analyzeTelemetry(rows: TelemetryRow[]): Finding[] {
+function TelemetryChart({
+  data,
+  title,
+  description,
+  dataKey,
+  color,
+  unit,
+}: {
+  data: TelemetryRow[];
+  title: string;
+  description: string;
+  dataKey: "speed" | "throttle" | "brake";
+  color: string;
+  unit: string;
+}) {
+  return (
+    <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
+      <h2 className="text-2xl font-bold text-cyan-400">
+        {title}
+      </h2>
+      <p className="mt-3 text-sm text-slate-400">
+        {description}
+      </p>
+      <div className="mt-6 h-72 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{
+              top: 10,
+              right: 20,
+              left: 0,
+              bottom: 20,
+            }}
+          >
+            <CartesianGrid
+              stroke="#334155"
+              strokeDasharray="3 3"
+            />
+            <XAxis
+              dataKey="time"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              stroke="#94a3b8"
+              label={{
+                value: "Tempo (s)",
+                position: "insideBottom",
+                offset: -12,
+              }}
+            />
+            <YAxis
+              stroke="#94a3b8"
+              domain={
+                dataKey === "speed"
+                  ? ["auto", "auto"]
+                  : [0, 100]
+              }
+              unit={unit}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#0f172a",
+                borderColor: "#334155",
+                borderRadius: 12,
+                color: "#ffffff",
+              }}
+            />
+            <Legend verticalAlign="top" />
+            <Line
+              type="linear"
+              dataKey={dataKey}
+              name={`${title.replace("Gráfico de ", "")} (${unit})`}
+              stroke={color}
+              strokeWidth={3}
+              dot={data.length <= 30}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </section>
+  );
+}
+
+function CombinedChart({
+  data,
+}: {
+  data: TelemetryRow[];
+}) {
+  return (
+    <section className="mt-8 rounded-2xl border border-cyan-800 bg-slate-900 p-6 sm:p-8">
+      <h2 className="text-2xl font-bold text-cyan-400">
+        Freio e acelerador combinados
+      </h2>
+
+      <p className="mt-3 text-sm text-slate-400">
+        Compare a intensidade do freio e do acelerador
+        durante a volta.
+      </p>
+
+      <div className="mt-6 h-80 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart
+            data={data}
+            margin={{
+              top: 10,
+              right: 20,
+              left: 0,
+              bottom: 20,
+            }}
+          >
+            <CartesianGrid
+              stroke="#334155"
+              strokeDasharray="3 3"
+            />
+
+            <XAxis
+              dataKey="time"
+              type="number"
+              domain={["dataMin", "dataMax"]}
+              stroke="#94a3b8"
+              label={{
+                value: "Tempo (s)",
+                position: "insideBottom",
+                offset: -12,
+              }}
+            />
+
+            <YAxis
+              domain={[0, 100]}
+              stroke="#94a3b8"
+              unit="%"
+            />
+
+            <Tooltip
+              contentStyle={{
+                backgroundColor: "#0f172a",
+                borderColor: "#334155",
+                borderRadius: 12,
+                color: "#ffffff",
+              }}
+            />
+
+            <Legend verticalAlign="top" />
+
+            <Line
+              type="linear"
+              dataKey="throttle"
+              name="Acelerador (%)"
+              stroke="#22c55e"
+              strokeWidth={3}
+              dot={data.length <= 30}
+              isAnimationActive={false}
+            />
+
+            <Line
+              type="linear"
+              dataKey="brake"
+              name="Freio (%)"
+              stroke="#ef4444"
+              strokeWidth={3}
+              dot={data.length <= 30}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <p className="mt-4 text-sm text-slate-400">
+        O gráfico facilita a visualização de momentos
+        em que freio e acelerador são utilizados
+        simultaneamente.
+      </p>
+    </section>
+  );
+}
+
+function analyzeTelemetry(
+  rows: TelemetryRow[]
+): Finding[] {
   const findings: Finding[] = [];
 
   const overlap = rows.filter(
-    (row) => row.brake > 20 && row.throttle > 20
+    (row) =>
+      row.brake > 20 &&
+      row.throttle > 20
   );
 
   if (overlap.length > 0) {
@@ -77,6 +257,7 @@ function analyzeTelemetry(rows: TelemetryRow[]): Finding[] {
   for (let i = 1; i < rows.length; i++) {
     const previous = rows[i - 1];
     const current = rows[i];
+
     const dt = current.time - previous.time;
 
     if (
@@ -122,10 +303,16 @@ export default function AnalyzePage() {
       const text = await file.text();
       const lines = text.trim().split(/\r?\n/);
 
+      if (lines.length < 3) {
+        throw new Error("Dados insuficientes.");
+      }
+
       const header = lines[0]
         .replace(/^\uFEFF/, "")
         .split(",")
-        .map((value) => value.trim().toLowerCase());
+        .map((value) =>
+          value.trim().toLowerCase()
+        );
 
       const required = [
         "time",
@@ -134,8 +321,12 @@ export default function AnalyzePage() {
         "throttle",
       ];
 
-      if (!required.every((name) => header.includes(name))) {
-        throw new Error("Colunas obrigatórias ausentes.");
+      if (
+        !required.every((name) =>
+          header.includes(name)
+        )
+      ) {
+        throw new Error("Colunas ausentes.");
       }
 
       const rows: TelemetryRow[] = lines
@@ -144,12 +335,23 @@ export default function AnalyzePage() {
         .map((line) => {
           const values = line
             .split(",")
-            .map((value) => value.trim());
+            .map((v) => v.trim());
 
-          const number = (column: string) =>
-            Number(values[header.indexOf(column)]);
+          const number = (column: string) => {
+            const value =
+              values[header.indexOf(column)];
+
+            return value === undefined ||
+              value === ""
+              ? NaN
+              : Number(value);
+          };
 
           const gearIndex = header.indexOf("gear");
+          const gearValue =
+            gearIndex >= 0
+              ? values[gearIndex]
+              : undefined;
 
           return {
             time: number("time"),
@@ -157,41 +359,36 @@ export default function AnalyzePage() {
             brake: number("brake"),
             throttle: number("throttle"),
             gear:
-              gearIndex >= 0 &&
-              values[gearIndex] !== ""
-                ? Number(values[gearIndex])
+              gearValue !== undefined &&
+              gearValue !== ""
+                ? Number(gearValue)
                 : undefined,
           };
         });
 
-      const invalidRows = rows.some((row) => {
-        return (
-          !Number.isFinite(row.time) ||
-          !Number.isFinite(row.speed) ||
-          !Number.isFinite(row.brake) ||
-          !Number.isFinite(row.throttle) ||
-          row.speed < 0 ||
-          row.brake < 0 ||
-          row.brake > 100 ||
-          row.throttle < 0 ||
-          row.throttle > 100 ||
-          (row.gear !== undefined &&
-            (!Number.isInteger(row.gear) ||
-              row.gear < -1 ||
-              row.gear > 10))
-        );
-      });
-
-      const invalidTimes = rows.some(
-        (row, index) =>
-          index > 0 &&
-          row.time <= rows[index - 1].time
-      );
-
       if (
         rows.length < 2 ||
-        invalidRows ||
-        invalidTimes
+        rows.some(
+          (row) =>
+            !Number.isFinite(row.time) ||
+            !Number.isFinite(row.speed) ||
+            !Number.isFinite(row.brake) ||
+            !Number.isFinite(row.throttle) ||
+            row.speed < 0 ||
+            row.brake < 0 ||
+            row.brake > 100 ||
+            row.throttle < 0 ||
+            row.throttle > 100 ||
+            (row.gear !== undefined &&
+              (!Number.isInteger(row.gear) ||
+                row.gear < -1 ||
+                row.gear > 10))
+        ) ||
+        rows.some(
+          (row, index) =>
+            index > 0 &&
+            row.time <= rows[index - 1].time
+        )
       ) {
         throw new Error("Dados inválidos.");
       }
@@ -199,23 +396,21 @@ export default function AnalyzePage() {
       setData(rows);
     } catch {
       setError(
-        "Não foi possível ler o CSV. Confira o formato."
+        "Não foi possível ler o CSV. Confira o formato dos dados."
       );
     }
   }
 
-  const maxSpeed =
-    data.length > 0
-      ? Math.max(...data.map((row) => row.speed))
-      : 0;
+  const maxSpeed = data.length
+    ? Math.max(...data.map((row) => row.speed))
+    : 0;
 
-  const averageSpeed =
-    data.length > 0
-      ? data.reduce(
-          (sum, row) => sum + row.speed,
-          0
-        ) / data.length
-      : 0;
+  const averageSpeed = data.length
+    ? data.reduce(
+        (sum, row) => sum + row.speed,
+        0
+      ) / data.length
+    : 0;
 
   const findings = analyzeTelemetry(data);
 
@@ -238,10 +433,10 @@ export default function AnalyzePage() {
         </h1>
 
         <p className="mt-4 text-slate-400">
-          Descubra possíveis pontos de melhoria na pilotagem.
+          Descubra possíveis pontos de melhoria
+          na pilotagem.
         </p>
 
-        {/* ENVIO DE ARQUIVOS */}
         <section className="mt-10 rounded-2xl border border-slate-700 bg-slate-900 p-8">
           <h2 className="text-2xl font-semibold">
             Envie sua telemetria
@@ -249,7 +444,7 @@ export default function AnalyzePage() {
 
           <p className="mt-3 text-slate-400">
             Selecione um arquivo CSV para visualizar
-            os dados da volta.
+            os dados.
           </p>
 
           <input
@@ -276,7 +471,6 @@ export default function AnalyzePage() {
 
         {data.length > 0 && (
           <>
-            {/* RESULTADOS */}
             <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-8">
               <h2 className="text-2xl font-bold text-cyan-400">
                 Resultado da leitura
@@ -299,53 +493,36 @@ export default function AnalyzePage() {
               </div>
             </section>
 
-            {/* GRÁFICO DE VELOCIDADE */}
-            <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-8">
-              <h2 className="text-2xl font-bold text-cyan-400">
-                Gráfico de velocidade
-              </h2>
+            <TelemetryChart
+              data={data}
+              title="Gráfico de velocidade"
+              description="Velocidade registrada ao longo da volta."
+              dataKey="speed"
+              color="#22d3ee"
+              unit="km/h"
+            />
 
-              <p className="mt-3 text-sm text-slate-400">
-                Velocidade registrada ao longo do tempo.
-              </p>
+            <TelemetryChart
+              data={data}
+              title="Gráfico de acelerador"
+              description="Porcentagem de acelerador aplicada pelo piloto."
+              dataKey="throttle"
+              color="#22c55e"
+              unit="%"
+            />
 
-              <div className="mt-6 h-72 w-full">
-                <ResponsiveContainer
-                  width="100%"
-                  height="100%"
-                >
-                  <LineChart data={data}>
-                    <CartesianGrid
-                      stroke="#334155"
-                      strokeDasharray="3 3"
-                    />
+            <TelemetryChart
+              data={data}
+              title="Gráfico de freio"
+              description="Porcentagem de frenagem aplicada pelo piloto."
+              dataKey="brake"
+              color="#ef4444"
+              unit="%"
+            />
 
-                    <XAxis
-                      dataKey="time"
-                      stroke="#94a3b8"
-                    />
+            <CombinedChart data={data} />
 
-                    <YAxis stroke="#94a3b8" />
-
-                    <Tooltip />
-
-                    <Legend verticalAlign="top" />
-
-                    <Line
-                      type="linear"
-                      dataKey="speed"
-                      name="Velocidade (km/h)"
-                      stroke="#22d3ee"
-                      strokeWidth={3}
-                      dot={true}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </section>
-
-            {/* TABELA DE TELEMETRIA */}
-            <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-8">
+            <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
               <h2 className="text-2xl font-bold text-cyan-400">
                 Dados da pilotagem
               </h2>
@@ -405,8 +582,7 @@ export default function AnalyzePage() {
               </div>
             </section>
 
-            {/* DIAGNÓSTICO EXPERIMENTAL */}
-            <section className="mt-8 rounded-2xl border border-cyan-800 bg-slate-900 p-8">
+            <section className="mt-8 rounded-2xl border border-cyan-800 bg-slate-900 p-6 sm:p-8">
               <p className="font-semibold tracking-widest text-cyan-400">
                 APEX AI COACH
               </p>
@@ -417,8 +593,8 @@ export default function AnalyzePage() {
 
               <p className="mt-3 text-sm text-slate-400">
                 Estes alertas são baseados em regras
-                experimentais, não em inteligência artificial.
-                Não comprovam erros de pilotagem.
+                experimentais, não em inteligência
+                artificial. Não comprovam erros de pilotagem.
               </p>
 
               {findings.length === 0 ? (
@@ -452,9 +628,9 @@ export default function AnalyzePage() {
               )}
 
               <p className="mt-6 text-xs text-slate-500">
-                Versão de desenvolvimento.
-                Requer telemetria real e validação
-                antes de orientar pilotos.
+                Versão de desenvolvimento. Requer
+                telemetria real e validação antes
+                de orientar pilotos.
               </p>
             </section>
           </>
