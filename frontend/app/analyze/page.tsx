@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import {
+  ResponsiveContainer,
   LineChart,
   Line,
   XAxis,
@@ -10,16 +11,12 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  ResponsiveContainer,
 } from "recharts";
 
-type TelemetryRow = {
-  time: number;
-  speed: number;
-  brake: number;
-  throttle: number;
-  gear?: number;
-};
+import {
+  calculateTelemetrySummary,
+  type TelemetryPoint,
+} from "../../lib/telemetry";
 
 type Finding = {
   title: string;
@@ -27,18 +24,27 @@ type Finding = {
   exercise: string;
 };
 
-function TelemetryChart({
+type ChartField = "speed" | "throttle" | "brake";
+
+const chartTooltipStyle = {
+  backgroundColor: "#0f172a",
+  border: "1px solid #334155",
+  borderRadius: "12px",
+  color: "#ffffff",
+};
+
+function SingleChart({
   data,
   title,
   description,
-  dataKey,
+  field,
   color,
   unit,
 }: {
-  data: TelemetryRow[];
+  data: TelemetryPoint[];
   title: string;
   description: string;
-  dataKey: "speed" | "throttle" | "brake";
+  field: ChartField;
   color: string;
   unit: string;
 }) {
@@ -47,56 +53,60 @@ function TelemetryChart({
       <h2 className="text-2xl font-bold text-cyan-400">
         {title}
       </h2>
+
       <p className="mt-3 text-sm text-slate-400">
         {description}
       </p>
+
       <div className="mt-6 h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
             data={data}
             margin={{
-              top: 10,
-              right: 20,
-              left: 0,
-              bottom: 20,
+              top: 12,
+              right: 24,
+              left: 5,
+              bottom: 25,
             }}
           >
             <CartesianGrid
               stroke="#334155"
               strokeDasharray="3 3"
             />
+
             <XAxis
               dataKey="time"
               type="number"
               domain={["dataMin", "dataMax"]}
               stroke="#94a3b8"
+              tick={{ fontSize: 12 }}
               label={{
                 value: "Tempo (s)",
                 position: "insideBottom",
-                offset: -12,
+                offset: -15,
               }}
             />
+
             <YAxis
               stroke="#94a3b8"
+              tick={{ fontSize: 12 }}
               domain={
-                dataKey === "speed"
+                field === "speed"
                   ? ["auto", "auto"]
                   : [0, 100]
               }
               unit={unit}
             />
+
             <Tooltip
-              contentStyle={{
-                backgroundColor: "#0f172a",
-                borderColor: "#334155",
-                borderRadius: 12,
-                color: "#ffffff",
-              }}
+              contentStyle={chartTooltipStyle}
             />
+
             <Legend verticalAlign="top" />
+
             <Line
               type="linear"
-              dataKey={dataKey}
+              dataKey={field}
               name={`${title.replace("Gráfico de ", "")} (${unit})`}
               stroke={color}
               strokeWidth={3}
@@ -113,7 +123,7 @@ function TelemetryChart({
 function CombinedChart({
   data,
 }: {
-  data: TelemetryRow[];
+  data: TelemetryPoint[];
 }) {
   return (
     <section className="mt-8 rounded-2xl border border-cyan-800 bg-slate-900 p-6 sm:p-8">
@@ -131,10 +141,10 @@ function CombinedChart({
           <LineChart
             data={data}
             margin={{
-              top: 10,
-              right: 20,
-              left: 0,
-              bottom: 20,
+              top: 12,
+              right: 24,
+              left: 5,
+              bottom: 25,
             }}
           >
             <CartesianGrid
@@ -147,26 +157,23 @@ function CombinedChart({
               type="number"
               domain={["dataMin", "dataMax"]}
               stroke="#94a3b8"
+              tick={{ fontSize: 12 }}
               label={{
                 value: "Tempo (s)",
                 position: "insideBottom",
-                offset: -12,
+                offset: -15,
               }}
             />
 
             <YAxis
               domain={[0, 100]}
               stroke="#94a3b8"
+              tick={{ fontSize: 12 }}
               unit="%"
             />
 
             <Tooltip
-              contentStyle={{
-                backgroundColor: "#0f172a",
-                borderColor: "#334155",
-                borderRadius: 12,
-                color: "#ffffff",
-              }}
+              contentStyle={chartTooltipStyle}
             />
 
             <Legend verticalAlign="top" />
@@ -195,23 +202,134 @@ function CombinedChart({
       </div>
 
       <p className="mt-4 text-sm text-slate-400">
-        O gráfico facilita a visualização de momentos
-        em que freio e acelerador são utilizados
-        simultaneamente.
+        As duas linhas ajudam a visualizar as transições
+        entre frenagem e aceleração.
       </p>
     </section>
   );
 }
 
+function parseTelemetryCsv(
+  content: string
+): TelemetryPoint[] {
+  const lines = content
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "");
+
+  if (lines.length < 3) {
+    throw new Error(
+      "O arquivo precisa ter um cabeçalho e pelo menos duas amostras."
+    );
+  }
+
+  const headers = lines[0]
+    .split(",")
+    .map((value) => value.trim().toLowerCase());
+
+  const requiredHeaders = [
+    "time",
+    "speed",
+    "brake",
+    "throttle",
+  ];
+
+  for (const column of requiredHeaders) {
+    if (!headers.includes(column)) {
+      throw new Error(
+        `A coluna obrigatória "${column}" não foi encontrada.`
+      );
+    }
+  }
+
+  const rows: TelemetryPoint[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const values = lines[i]
+      .split(",")
+      .map((value) => value.trim());
+
+    function readNumber(column: string): number {
+      const index = headers.indexOf(column);
+      const value = values[index];
+
+      if (value === undefined || value === "") {
+        return NaN;
+      }
+
+      return Number(value);
+    }
+
+    const gearIndex = headers.indexOf("gear");
+    const gearValue =
+      gearIndex >= 0
+        ? values[gearIndex]
+        : undefined;
+
+    const row: TelemetryPoint = {
+      time: readNumber("time"),
+      speed: readNumber("speed"),
+      brake: readNumber("brake"),
+      throttle: readNumber("throttle"),
+      gear:
+        gearValue !== undefined && gearValue !== ""
+          ? Number(gearValue)
+          : undefined,
+    };
+
+    if (
+      !Number.isFinite(row.time) ||
+      !Number.isFinite(row.speed) ||
+      !Number.isFinite(row.brake) ||
+      !Number.isFinite(row.throttle) ||
+      row.speed < 0 ||
+      row.brake < 0 ||
+      row.brake > 100 ||
+      row.throttle < 0 ||
+      row.throttle > 100
+    ) {
+      throw new Error(
+        `Dados inválidos na linha ${i + 1}.`
+      );
+    }
+
+    if (
+      row.gear !== undefined &&
+      (!Number.isInteger(row.gear) ||
+        row.gear < -1 ||
+        row.gear > 10)
+    ) {
+      throw new Error(
+        `Marcha inválida na linha ${i + 1}.`
+      );
+    }
+
+    if (
+      rows.length > 0 &&
+      row.time <= rows[rows.length - 1].time
+    ) {
+      throw new Error(
+        `O tempo precisa ser crescente. Verifique a linha ${i + 1}.`
+      );
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
 function analyzeTelemetry(
-  rows: TelemetryRow[]
+  rows: TelemetryPoint[]
 ): Finding[] {
   const findings: Finding[] = [];
 
+  // Regra experimental 1:
+  // Sobreposição de freio e acelerador.
+
   const overlap = rows.filter(
-    (row) =>
-      row.brake > 20 &&
-      row.throttle > 20
+    (row) => row.brake > 20 && row.throttle > 20
   );
 
   if (overlap.length > 0) {
@@ -223,6 +341,9 @@ function analyzeTelemetry(
     });
   }
 
+  // Regra experimental 2:
+  // Oscilação do acelerador.
+
   let throttleChanges = 0;
 
   for (let i = 2; i < rows.length; i++) {
@@ -230,14 +351,16 @@ function analyzeTelemetry(
     const b = rows[i - 1];
     const c = rows[i];
 
+    const firstChange = b.throttle - a.throttle;
+    const secondChange = c.throttle - b.throttle;
+
     if (
       a.brake < 10 &&
       b.brake < 10 &&
       c.brake < 10 &&
-      Math.abs(b.throttle - a.throttle) >= 30 &&
-      Math.abs(c.throttle - b.throttle) >= 30 &&
-      (b.throttle - a.throttle) *
-        (c.throttle - b.throttle) < 0
+      Math.abs(firstChange) >= 30 &&
+      Math.abs(secondChange) >= 30 &&
+      firstChange * secondChange < 0
     ) {
       throttleChanges++;
     }
@@ -252,17 +375,21 @@ function analyzeTelemetry(
     });
   }
 
+  // Regra experimental 3:
+  // Aplicação rápida do freio.
+
   let abruptBraking = 0;
 
   for (let i = 1; i < rows.length; i++) {
     const previous = rows[i - 1];
     const current = rows[i];
 
-    const dt = current.time - previous.time;
+    const timeDifference =
+      current.time - previous.time;
 
     if (
-      dt > 0 &&
-      dt <= 0.2 &&
+      timeDifference > 0 &&
+      timeDifference <= 0.2 &&
       previous.brake < 20 &&
       current.brake > 80
     ) {
@@ -284,15 +411,17 @@ function analyzeTelemetry(
 
 export default function AnalyzePage() {
   const [fileName, setFileName] = useState("");
-  const [data, setData] = useState<TelemetryRow[]>([]);
+  const [data, setData] = useState<TelemetryPoint[]>([]);
   const [error, setError] = useState("");
 
   async function handleFile(file?: File) {
-    setFileName(file?.name || "");
+    setFileName(file?.name ?? "");
     setData([]);
     setError("");
 
-    if (!file) return;
+    if (!file) {
+      return;
+    }
 
     if (!file.name.toLowerCase().endsWith(".csv")) {
       setError("Selecione um arquivo CSV.");
@@ -300,119 +429,26 @@ export default function AnalyzePage() {
     }
 
     try {
-      const text = await file.text();
-      const lines = text.trim().split(/\r?\n/);
+      const content = await file.text();
+      const parsedRows = parseTelemetryCsv(content);
 
-      if (lines.length < 3) {
-        throw new Error("Dados insuficientes.");
-      }
+      setData(parsedRows);
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Não foi possível ler o arquivo.";
 
-      const header = lines[0]
-        .replace(/^\uFEFF/, "")
-        .split(",")
-        .map((value) =>
-          value.trim().toLowerCase()
-        );
-
-      const required = [
-        "time",
-        "speed",
-        "brake",
-        "throttle",
-      ];
-
-      if (
-        !required.every((name) =>
-          header.includes(name)
-        )
-      ) {
-        throw new Error("Colunas ausentes.");
-      }
-
-      const rows: TelemetryRow[] = lines
-        .slice(1)
-        .filter((line) => line.trim())
-        .map((line) => {
-          const values = line
-            .split(",")
-            .map((v) => v.trim());
-
-          const number = (column: string) => {
-            const value =
-              values[header.indexOf(column)];
-
-            return value === undefined ||
-              value === ""
-              ? NaN
-              : Number(value);
-          };
-
-          const gearIndex = header.indexOf("gear");
-          const gearValue =
-            gearIndex >= 0
-              ? values[gearIndex]
-              : undefined;
-
-          return {
-            time: number("time"),
-            speed: number("speed"),
-            brake: number("brake"),
-            throttle: number("throttle"),
-            gear:
-              gearValue !== undefined &&
-              gearValue !== ""
-                ? Number(gearValue)
-                : undefined,
-          };
-        });
-
-      if (
-        rows.length < 2 ||
-        rows.some(
-          (row) =>
-            !Number.isFinite(row.time) ||
-            !Number.isFinite(row.speed) ||
-            !Number.isFinite(row.brake) ||
-            !Number.isFinite(row.throttle) ||
-            row.speed < 0 ||
-            row.brake < 0 ||
-            row.brake > 100 ||
-            row.throttle < 0 ||
-            row.throttle > 100 ||
-            (row.gear !== undefined &&
-              (!Number.isInteger(row.gear) ||
-                row.gear < -1 ||
-                row.gear > 10))
-        ) ||
-        rows.some(
-          (row, index) =>
-            index > 0 &&
-            row.time <= rows[index - 1].time
-        )
-      ) {
-        throw new Error("Dados inválidos.");
-      }
-
-      setData(rows);
-    } catch {
-      setError(
-        "Não foi possível ler o CSV. Confira o formato dos dados."
-      );
+      setError(message);
     }
   }
 
-  const maxSpeed = data.length
-    ? Math.max(...data.map((row) => row.speed))
-    : 0;
+  const summary = calculateTelemetrySummary(data);
 
-  const averageSpeed = data.length
-    ? data.reduce(
-        (sum, row) => sum + row.speed,
-        0
-      ) / data.length
-    : 0;
-
-  const findings = analyzeTelemetry(data);
+  const findings =
+    data.length > 0
+      ? analyzeTelemetry(data)
+      : [];
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-16 text-white">
@@ -478,44 +514,61 @@ export default function AnalyzePage() {
 
               <div className="mt-6 space-y-3">
                 <p>
-                  Registros encontrados: {data.length}
+                  Registros encontrados:{" "}
+                  {summary.samples}
                 </p>
 
                 <p>
                   Velocidade máxima:{" "}
-                  {maxSpeed.toFixed(1)} km/h
+                  {summary.maxSpeedKmh.toFixed(1)} km/h
                 </p>
 
                 <p>
                   Velocidade média das amostras:{" "}
-                  {averageSpeed.toFixed(1)} km/h
+                  {summary.averageSpeedKmh.toFixed(1)} km/h
+                </p>
+
+                <p>
+                  Duração dos dados:{" "}
+                  {summary.durationSeconds.toFixed(2)} s
+                </p>
+
+                <p>
+                  Trocas de marcha identificadas:{" "}
+                  {summary.gearChanges}
                 </p>
               </div>
+
+              <p className="mt-5 text-xs text-slate-500">
+                A velocidade média é calculada a partir
+                das amostras e não é necessariamente
+                ponderada pelo tempo.
+              </p>
             </section>
 
-            <TelemetryChart
+            <SingleChart
               data={data}
               title="Gráfico de velocidade"
               description="Velocidade registrada ao longo da volta."
-              dataKey="speed"
+              field="speed"
               color="#22d3ee"
               unit="km/h"
             />
 
-            <TelemetryChart
+            <SingleChart
               data={data}
               title="Gráfico de acelerador"
               description="Porcentagem de acelerador aplicada pelo piloto."
-              dataKey="throttle"
+              field="throttle"
               color="#22c55e"
               unit="%"
             />
 
-            <TelemetryChart
+            <SingleChart
               data={data}
               title="Gráfico de freio"
               description="Porcentagem de frenagem aplicada pelo piloto."
-              dataKey="brake"
+              field="brake"
               color="#ef4444"
               unit="%"
             />
