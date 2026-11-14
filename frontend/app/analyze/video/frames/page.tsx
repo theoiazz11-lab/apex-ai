@@ -2,6 +2,7 @@
 "use client";
 
 import {
+  useEffect,
   useRef,
   useState,
   type ChangeEvent,
@@ -21,17 +22,11 @@ import {
 
 import {
   readAccHudBatch,
-  type HudReadingResult,
   type HudOcrValue,
+  type HudReadingResult,
 } from "../../../../lib/video/hudReader";
 
-const MAX_VIDEO_SIZE = 500 * 1024 * 1024;
-
-const REGION_LABELS: Record<HudRegionName, string> = {
-  speed: "Velocidade",
-  gear: "Marcha",
-  dashboard: "Painel completo",
-};
+type AnalysisMode = "quick" | "full";
 
 type AnalysisStage =
   | "idle"
@@ -40,30 +35,58 @@ type AnalysisStage =
   | "reading"
   | "complete";
 
-function OcrResultCard({
+const MAX_VIDEO_SIZE = 500 * 1024 * 1024;
+const MAX_FRAMES = 40;
+
+const REGION_LABELS: Record<
+  HudRegionName,
+  string
+> = {
+  gear: "Marcha",
+  speed: "Velocidade",
+  dashboard: "Painel completo",
+};
+
+function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
+    return "--:--.---";
+  }
+
+  const totalMilliseconds = Math.round(
+    Math.max(0, seconds) * 1000
+  );
+
+  const minutes = Math.floor(
+    totalMilliseconds / 60000
+  );
+
+  const remaining = totalMilliseconds % 60000;
+
+  const wholeSeconds = Math.floor(
+    remaining / 1000
+  );
+
+  const milliseconds = remaining % 1000;
+
+  return (
+    `${minutes}:` +
+    `${String(wholeSeconds).padStart(2, "0")}.` +
+    `${String(milliseconds).padStart(3, "0")}`
+  );
+}
+
+function ResultCard({
   label,
   unit,
   reading,
 }: {
   label: string;
   unit: string;
-  reading: HudOcrValue | undefined;
+  reading?: HudOcrValue;
 }) {
-  if (!reading) {
-    return (
-      <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
-        <p className="text-sm text-slate-400">
-          {label}
-        </p>
-
-        <p className="mt-3 text-xl font-bold text-slate-500">
-          Aguardando leitura
-        </p>
-      </div>
-    );
-  }
-
-  const recognized = reading.value !== null;
+  const valid =
+    reading !== undefined &&
+    reading.value !== null;
 
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
@@ -72,34 +95,58 @@ function OcrResultCard({
       </p>
 
       <p
-        className={`mt-3 text-3xl font-bold ${
-          recognized
+        className={`mt-3 text-2xl font-bold ${
+          valid
             ? "text-green-400"
             : "text-amber-300"
         }`}
       >
-        {recognized
-          ? `${reading.value} ${unit}`
+        {valid
+          ? `${reading.value}${unit ? ` ${unit}` : ""}`
           : "Não identificado"}
       </p>
 
-      <p className="mt-3 text-sm text-slate-400">
-        Confiança do OCR:{" "}
-        {reading.confidence.toFixed(1)}%
-      </p>
+      {reading && (
+        <>
+          <p className="mt-3 text-sm text-slate-400">
+            Confiança:{" "}
+            {reading.confidence.toFixed(1)}%
+          </p>
 
-      <p className="mt-2 break-all text-xs text-slate-500">
-        Texto detectado:{" "}
-        {reading.rawText.trim() || "(vazio)"}
-      </p>
+          <p className="mt-2 break-all text-xs text-slate-500">
+            Texto detectado:{" "}
+            {reading.rawText.trim() || "(vazio)"}
+          </p>
+        </>
+      )}
     </div>
   );
 }
 
 export default function VideoFramesPage() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef =
+    useRef<HTMLInputElement>(null);
 
-  const [file, setFile] = useState<File | null>(null);
+  const [file, setFile] =
+    useState<File | null>(null);
+
+  const [duration, setDuration] =
+    useState<number | null>(null);
+
+  const [metadataLoading, setMetadataLoading] =
+    useState(false);
+
+  const [mode, setMode] =
+    useState<AnalysisMode>("quick");
+
+  const [startSeconds, setStartSeconds] =
+    useState(0);
+
+  const [endSeconds, setEndSeconds] =
+    useState(0);
+
+  const [intervalSeconds, setIntervalSeconds] =
+    useState(10);
 
   const [frames, setFrames] = useState<
     ExtractedFrame[]
@@ -113,28 +160,63 @@ export default function VideoFramesPage() {
     HudReadingResult[]
   >([]);
 
-  const [selectedFrameIndex, setSelectedFrameIndex] =
-    useState(0);
+  const [
+    selectedFrameIndex,
+    setSelectedFrameIndex,
+  ] = useState(0);
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] =
+    useState(false);
 
-  const [dragging, setDragging] = useState(false);
+  const [dragging, setDragging] =
+    useState(false);
 
   const [stage, setStage] =
     useState<AnalysisStage>("idle");
 
-  const [error, setError] = useState("");
+  const [error, setError] =
+    useState("");
 
-  const [ocrError, setOcrError] = useState("");
+  const [ocrError, setOcrError] =
+    useState("");
 
-  const selectedFrame = frames[selectedFrameIndex];
+  const selectedFrame =
+    frames[selectedFrameIndex];
 
-  const selectedHud = hudResults[selectedFrameIndex];
+  const selectedHud =
+    hudResults[selectedFrameIndex];
 
-  const selectedOcr = ocrResults.find(
-    (reading) =>
-      reading.timeSeconds === selectedHud?.timeSeconds
-  );
+  const selectedOcr =
+    ocrResults[selectedFrameIndex];
+
+  const estimatedFrames =
+    mode === "quick"
+      ? 5
+      : Number.isFinite(intervalSeconds) &&
+          intervalSeconds > 0 &&
+          endSeconds > startSeconds
+        ? Math.floor(
+            (endSeconds - startSeconds) /
+              intervalSeconds +
+              1e-9
+          ) + 1
+        : 0;
+
+  const validRange =
+    mode === "quick"
+      ? duration !== null &&
+        duration >= 20
+      : duration !== null &&
+        Number.isFinite(startSeconds) &&
+        Number.isFinite(endSeconds) &&
+        Number.isFinite(intervalSeconds) &&
+        startSeconds >= 0 &&
+        endSeconds > startSeconds &&
+        endSeconds <= duration &&
+        intervalSeconds >= 2 &&
+        intervalSeconds <= 30 &&
+        estimatedFrames >= 1 &&
+        estimatedFrames <= MAX_FRAMES;
 
   function resetResults() {
     setFrames([]);
@@ -158,7 +240,9 @@ export default function VideoFramesPage() {
 
     if (
       !extension ||
-      !["mp4", "mov", "webm"].includes(extension)
+      !["mp4", "mov", "webm"].includes(
+        extension
+      )
     ) {
       setError(
         "Selecione um vídeo MP4, MOV ou WEBM."
@@ -166,18 +250,17 @@ export default function VideoFramesPage() {
       return;
     }
 
-    if (selectedFile.size === 0) {
-      setError("O arquivo está vazio.");
-      return;
-    }
-
-    if (selectedFile.size > MAX_VIDEO_SIZE) {
+    if (
+      selectedFile.size === 0 ||
+      selectedFile.size > MAX_VIDEO_SIZE
+    ) {
       setError(
-        "O vídeo deve ter no máximo 500 MB."
+        "O vídeo precisa ter entre 1 byte e 500 MB."
       );
       return;
     }
 
+    setDuration(null);
     setFile(selectedFile);
     resetResults();
   }
@@ -185,7 +268,9 @@ export default function VideoFramesPage() {
   function handleFileChange(
     event: ChangeEvent<HTMLInputElement>
   ) {
-    selectFile(event.target.files?.[0]);
+    selectFile(
+      event.target.files?.[0]
+    );
   }
 
   function handleDrop(
@@ -193,11 +278,12 @@ export default function VideoFramesPage() {
   ) {
     event.preventDefault();
     event.stopPropagation();
-
     setDragging(false);
 
     if (!loading) {
-      selectFile(event.dataTransfer.files?.[0]);
+      selectFile(
+        event.dataTransfer.files?.[0]
+      );
     }
   }
 
@@ -207,6 +293,7 @@ export default function VideoFramesPage() {
     }
 
     setFile(null);
+    setDuration(null);
     resetResults();
 
     if (fileInputRef.current) {
@@ -214,8 +301,90 @@ export default function VideoFramesPage() {
     }
   }
 
+  // Lê a duração do arquivo local.
+  // O vídeo não é enviado a um servidor.
+
+  useEffect(() => {
+    if (!file) {
+      setDuration(null);
+      setMetadataLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const video =
+      document.createElement("video");
+
+    const url =
+      URL.createObjectURL(file);
+
+    setMetadataLoading(true);
+    setDuration(null);
+
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+
+    video.onloadedmetadata = () => {
+      if (cancelled) {
+        return;
+      }
+
+      const seconds = video.duration;
+
+      if (
+        !Number.isFinite(seconds) ||
+        seconds <= 0
+      ) {
+        setError(
+          "Não foi possível obter a duração do vídeo."
+        );
+      } else {
+        setDuration(seconds);
+        setStartSeconds(0);
+        setEndSeconds(
+          Number(seconds.toFixed(3))
+        );
+      }
+
+      setMetadataLoading(false);
+    };
+
+    video.onerror = () => {
+      if (cancelled) {
+        return;
+      }
+
+      setMetadataLoading(false);
+      setError(
+        "O navegador não conseguiu abrir esse vídeo."
+      );
+    };
+
+    video.src = url;
+    video.load();
+
+    return () => {
+      cancelled = true;
+
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+
+      URL.revokeObjectURL(url);
+    };
+  }, [file]);
+
   async function analyzeFrames() {
-    if (!file || loading) {
+    if (
+      !file ||
+      loading ||
+      !validRange
+    ) {
+      setError(
+        "Confira o vídeo e as configurações da análise."
+      );
       return;
     }
 
@@ -223,52 +392,61 @@ export default function VideoFramesPage() {
     resetResults();
 
     try {
-      // ETAPA 1
-      // Extrair cinco imagens do vídeo.
-
       setStage("extracting");
 
-      const extracted = await extractVideoFrames(
-        file,
-        {
-          startSeconds: 0,
-          endSeconds: 20,
-          intervalSeconds: 5,
-          maxFrames: 5,
-          maxWidth: 1280,
-          quality: 0.85,
-        }
-      );
+      const options =
+        mode === "quick"
+          ? {
+              startSeconds: 0,
+              endSeconds: 20,
+              intervalSeconds: 5,
+              maxFrames: 5,
+              maxWidth: 1280,
+              quality: 0.85,
+            }
+          : {
+              startSeconds,
+              endSeconds,
+              intervalSeconds,
+              maxFrames: MAX_FRAMES,
+              maxWidth: 1280,
+              quality: 0.85,
+            };
+
+      const extracted =
+        await extractVideoFrames(
+          file,
+          options
+        );
 
       setFrames(extracted);
-
-      // ETAPA 2
-      // Recortar as regiões do HUD.
 
       setStage("detecting");
 
       const detections =
-        await detectAccHudBatch(extracted);
+        await detectAccHudBatch(
+          extracted
+        );
 
       setHudResults(detections);
-
-      // ETAPA 3
-      // Reconhecer números com Tesseract.js.
 
       setStage("reading");
 
       try {
         const readings =
-          await readAccHudBatch(detections, {
-            minimumConfidence: 50,
-          });
+          await readAccHudBatch(
+            detections,
+            {
+              minimumConfidence: 50,
+            }
+          );
 
         setOcrResults(readings);
       } catch (caughtError) {
         setOcrError(
           caughtError instanceof Error
             ? caughtError.message
-            : "Não foi possível executar o OCR."
+            : "Falha no reconhecimento OCR."
         );
       }
 
@@ -278,7 +456,7 @@ export default function VideoFramesPage() {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Ocorreu um erro durante a análise."
+          : "Não foi possível analisar o vídeo."
       );
 
       setStage("idle");
@@ -287,22 +465,22 @@ export default function VideoFramesPage() {
     }
   }
 
-  function getStageText() {
+  function stageMessage() {
     switch (stage) {
       case "extracting":
-        return "Extraindo imagens do vídeo...";
+        return "Extraindo os quadros do vídeo...";
 
       case "detecting":
-        return "Localizando o HUD...";
+        return "Localizando velocidade e marcha...";
 
       case "reading":
-        return "Reconhecendo velocidade e marcha...";
+        return "Reconhecendo os números com OCR...";
 
       case "complete":
         return "Processamento concluído.";
 
       default:
-        return "Aguardando vídeo.";
+        return "Aguardando análise.";
     }
   }
 
@@ -321,19 +499,18 @@ export default function VideoFramesPage() {
         </p>
 
         <h1 className="mt-3 text-3xl font-bold">
-          Leitura automática do HUD
+          Análise de vídeo do ACC
         </h1>
 
         <p className="mt-4 text-slate-400">
-          O Apex AI extrai cinco imagens do vídeo,
-          localiza os indicadores e tenta reconhecer
+          Extraia imagens da volta e reconheça
           velocidade e marcha automaticamente.
         </p>
 
         {/* ENVIO DO VÍDEO */}
 
         <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
-          <h2 className="text-xl font-semibold">
+          <h2 className="text-xl font-bold">
             1. Enviar vídeo
           </h2>
 
@@ -359,18 +536,14 @@ export default function VideoFramesPage() {
               setDragging(false);
             }}
             onDrop={handleDrop}
-            className={`mt-6 rounded-xl border-2 border-dashed p-8 text-center ${
+            className={`mt-5 rounded-xl border-2 border-dashed p-8 text-center ${
               dragging
                 ? "border-cyan-400 bg-cyan-950"
                 : "border-slate-600 bg-slate-950"
             }`}
           >
             <p className="text-slate-300">
-              Arraste seu vídeo até esta área
-            </p>
-
-            <p className="mt-2 text-sm text-slate-500">
-              Ou selecione pelo botão abaixo
+              Arraste o vídeo para esta área
             </p>
 
             <button
@@ -381,21 +554,17 @@ export default function VideoFramesPage() {
               }
               className="mt-5 rounded-xl bg-cyan-400 px-8 py-4 font-bold text-slate-950 hover:bg-cyan-300 disabled:opacity-50"
             >
-              Selecionar vídeo do computador
+              Selecionar vídeo
             </button>
 
             <p className="mt-4 text-xs text-slate-500">
-              MP4, MOV ou WEBM · Máximo de 500 MB
+              MP4, MOV ou WEBM · Máximo 500 MB
             </p>
           </div>
 
           {file && (
-            <div className="mt-6 rounded-xl border border-green-800 bg-slate-950 p-5">
-              <p className="font-semibold text-green-400">
-                Vídeo selecionado!
-              </p>
-
-              <p className="mt-2 break-all text-sm text-slate-300">
+            <div className="mt-5 rounded-xl border border-slate-700 bg-slate-950 p-4">
+              <p className="break-all font-semibold">
                 {file.name}
               </p>
 
@@ -408,6 +577,15 @@ export default function VideoFramesPage() {
                 MB
               </p>
 
+              <p className="mt-2 text-sm text-slate-400">
+                Duração:{" "}
+                {metadataLoading
+                  ? "Carregando..."
+                  : duration === null
+                    ? "Não disponível"
+                    : formatTime(duration)}
+              </p>
+
               <button
                 type="button"
                 disabled={loading}
@@ -418,10 +596,162 @@ export default function VideoFramesPage() {
               </button>
             </div>
           )}
+        </section>
+
+        {/* CONFIGURAÇÃO */}
+
+        <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
+          <h2 className="text-xl font-bold">
+            2. Configurar análise
+          </h2>
+
+          <p className="mt-3 text-sm text-slate-400">
+            Escolha entre verificar cinco quadros
+            ou analisar amostras de toda a volta.
+          </p>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setMode("quick");
+                resetResults();
+              }}
+              className={`rounded-xl border-2 p-5 text-left ${
+                mode === "quick"
+                  ? "border-cyan-400 bg-slate-950"
+                  : "border-slate-700 bg-slate-950"
+              }`}
+            >
+              <p className="font-bold">
+                Teste rápido
+              </p>
+
+              <p className="mt-2 text-sm text-slate-400">
+                5 imagens: 0, 5, 10, 15 e 20 s
+              </p>
+            </button>
+
+            <button
+              type="button"
+              disabled={loading}
+              onClick={() => {
+                setMode("full");
+                resetResults();
+              }}
+              className={`rounded-xl border-2 p-5 text-left ${
+                mode === "full"
+                  ? "border-cyan-400 bg-slate-950"
+                  : "border-slate-700 bg-slate-950"
+              }`}
+            >
+              <p className="font-bold">
+                Volta completa
+              </p>
+
+              <p className="mt-2 text-sm text-slate-400">
+                Imagens distribuídas pelo intervalo
+                selecionado
+              </p>
+            </button>
+          </div>
+
+          {mode === "full" && (
+            <div className="mt-6 grid gap-5 sm:grid-cols-3">
+              <label className="text-sm text-slate-300">
+                Início (segundos)
+
+                <input
+                  type="number"
+                  min={0}
+                  step={0.001}
+                  disabled={loading}
+                  value={startSeconds}
+                  onChange={(event) => {
+                    setStartSeconds(
+                      Number(event.target.value)
+                    );
+                    resetResults();
+                  }}
+                  className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white"
+                />
+              </label>
+
+              <label className="text-sm text-slate-300">
+                Fim (segundos)
+
+                <input
+                  type="number"
+                  min={0}
+                  step={0.001}
+                  disabled={loading}
+                  value={endSeconds}
+                  onChange={(event) => {
+                    setEndSeconds(
+                      Number(event.target.value)
+                    );
+                    resetResults();
+                  }}
+                  className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white"
+                />
+              </label>
+
+              <label className="text-sm text-slate-300">
+                Intervalo entre imagens (s)
+
+                <input
+                  type="number"
+                  min={2}
+                  max={30}
+                  step={1}
+                  disabled={loading}
+                  value={intervalSeconds}
+                  onChange={(event) => {
+                    setIntervalSeconds(
+                      Number(event.target.value)
+                    );
+                    resetResults();
+                  }}
+                  className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white"
+                />
+              </label>
+            </div>
+          )}
+
+          {mode === "full" && (
+            <p className="mt-4 text-sm text-slate-400">
+              Amostras previstas:{" "}
+              <strong>{estimatedFrames}</strong>
+              {" · "}Máximo: {MAX_FRAMES}
+            </p>
+          )}
+
+          <p className="mt-4 text-sm text-amber-300">
+            O reconhecimento é experimental.
+            Uma volta completa usa amostras
+            espaçadas, não todos os quadros
+            do vídeo. Quanto mais imagens,
+            maior o tempo de processamento.
+          </p>
+
+          {!validRange && file && (
+            <p className="mt-4 text-sm text-amber-300">
+              Confira o intervalo e a duração
+              do vídeo. No modo completo,
+              use de 2 a 30 segundos entre
+              capturas e no máximo 40 imagens.
+            </p>
+          )}
 
           <button
             type="button"
-            disabled={!file || loading}
+            disabled={
+              !file ||
+              loading ||
+              metadataLoading ||
+              !validRange
+            }
             onClick={analyzeFrames}
             className="mt-6 w-full rounded-xl bg-cyan-400 px-6 py-4 font-bold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -435,16 +765,9 @@ export default function VideoFramesPage() {
               aria-live="polite"
               className="mt-5 rounded-lg bg-slate-950 p-4"
             >
-              <p className="font-medium text-cyan-400">
-                {getStageText()}
+              <p className="font-semibold text-cyan-400">
+                {stageMessage()}
               </p>
-
-              {loading && (
-                <p className="mt-2 text-xs text-slate-400">
-                  O reconhecimento pode levar algum
-                  tempo na primeira execução.
-                </p>
-              )}
             </div>
           )}
 
@@ -458,100 +781,36 @@ export default function VideoFramesPage() {
           )}
 
           {ocrError && (
-            <div
+            <p
               role="alert"
-              className="mt-4 rounded-lg border border-amber-700 bg-slate-950 p-4"
+              className="mt-4 rounded-lg border border-amber-700 bg-slate-950 p-4 text-sm text-amber-300"
             >
-              <p className="font-semibold text-amber-300">
-                As imagens foram extraídas,
-                mas o OCR não funcionou.
-              </p>
-
-              <p className="mt-2 text-sm text-slate-300">
-                {ocrError}
-              </p>
-            </div>
+              Os quadros foram extraídos,
+              mas o OCR falhou: {ocrError}
+            </p>
           )}
         </section>
 
-        {/* QUADROS EXTRAÍDOS */}
-
-        {frames.length > 0 && (
-          <section className="mt-8">
-            <h2 className="text-2xl font-bold">
-              2. Quadros extraídos
-            </h2>
-
-            <p className="mt-3 text-slate-400">
-              {frames.length} imagens capturadas.
-              Clique em uma para conferir a leitura.
-            </p>
-
-            <div className="mt-6 grid gap-5 sm:grid-cols-2">
-              {frames.map((frame, index) => (
-                <button
-                  type="button"
-                  key={`${frame.timeSeconds}-${index}`}
-                  onClick={() =>
-                    setSelectedFrameIndex(index)
-                  }
-                  className={`overflow-hidden rounded-xl border-2 bg-slate-900 text-left ${
-                    selectedFrameIndex === index
-                      ? "border-cyan-400"
-                      : "border-slate-700 hover:border-slate-500"
-                  }`}
-                >
-                  <img
-                    src={frame.imageDataUrl}
-                    alt={`Quadro aos ${frame.timeSeconds} segundos`}
-                    className="w-full"
-                  />
-
-                  <div className="p-4">
-                    <p className="font-semibold text-cyan-400">
-                      {frame.timeSeconds.toFixed(3)} s
-                    </p>
-
-                    <p className="mt-1 text-sm text-slate-400">
-                      {frame.width} × {frame.height}
-                    </p>
-
-                    {selectedFrameIndex === index && (
-                      <p className="mt-2 text-xs font-semibold text-green-400">
-                        Quadro selecionado
-                      </p>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
-
-        {/* RESULTADO AUTOMÁTICO */}
+        {/* TABELA */}
 
         {ocrResults.length > 0 && (
           <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
-            <p className="font-semibold tracking-widest text-cyan-400">
-              APEX AI OCR
-            </p>
-
-            <h2 className="mt-3 text-2xl font-bold">
-              3. Resultados automáticos
+            <h2 className="text-xl font-bold">
+              3. Telemetria estimada pelo vídeo
             </h2>
 
             <p className="mt-3 text-sm text-slate-400">
-              Resultados experimentais do OCR.
-              Uma confiança alta não garante
-              que o número esteja correto.
+              Esta tabela contém leituras do
+              HUD realizadas por OCR. Ainda não
+              equivale à telemetria oficial do ACC.
             </p>
 
-            <div className="mt-6 overflow-x-auto">
+            <div className="mt-5 overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-slate-700 text-slate-400">
                     <th className="p-3">
-                      Instante
+                      Tempo
                     </th>
 
                     <th className="p-3">
@@ -561,129 +820,208 @@ export default function VideoFramesPage() {
                     <th className="p-3">
                       Marcha
                     </th>
+
+                    <th className="p-3">
+                      Conf. velocidade
+                    </th>
+
+                    <th className="p-3">
+                      Conf. marcha
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {ocrResults.map((reading) => (
-                    <tr
-                      key={reading.timeSeconds}
-                      className="border-b border-slate-800"
-                    >
-                      <td className="p-3">
-                        {reading.timeSeconds.toFixed(1)} s
-                      </td>
+                  {ocrResults.map(
+                    (reading, index) => (
+                      <tr
+                        key={`${reading.timeSeconds}-${index}`}
+                        className="border-b border-slate-800"
+                      >
+                        <td className="p-3">
+                          {formatTime(
+                            reading.timeSeconds
+                          )}
+                        </td>
 
-                      <td className="p-3">
-                        {reading.speed.value === null
-                          ? "Não identificado"
-                          : `${reading.speed.value} km/h`}
-                      </td>
+                        <td className="p-3">
+                          {reading.speed.value === null
+                            ? "Não identificado"
+                            : `${reading.speed.value} km/h`}
+                        </td>
 
-                      <td className="p-3">
-                        {reading.gear.value === null
-                          ? "Não identificado"
-                          : reading.gear.value}
-                      </td>
-                    </tr>
-                  ))}
+                        <td className="p-3">
+                          {reading.gear.value === null
+                            ? "Não identificado"
+                            : reading.gear.value}
+                        </td>
+
+                        <td className="p-3">
+                          {reading.speed.confidence.toFixed(
+                            1
+                          )}
+                          %
+                        </td>
+
+                        <td className="p-3">
+                          {reading.gear.confidence.toFixed(
+                            1
+                          )}
+                          %
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
           </section>
         )}
 
-        {/* RECORTES DO HUD */}
+        {/* QUADROS */}
+
+        {frames.length > 0 && (
+          <section className="mt-8">
+            <h2 className="text-xl font-bold">
+              4. Quadros da análise
+            </h2>
+
+            <p className="mt-3 text-sm text-slate-400">
+              {frames.length} imagens extraídas.
+              Selecione uma para visualizar
+              o HUD e as leituras.
+            </p>
+
+            <div className="mt-5 grid gap-4 sm:grid-cols-3">
+              {frames.map(
+                (frame, index) => (
+                  <button
+                    key={`${frame.timeSeconds}-${index}`}
+                    type="button"
+                    onClick={() =>
+                      setSelectedFrameIndex(
+                        index
+                      )
+                    }
+                    className={`overflow-hidden rounded-xl border-2 bg-slate-900 text-left ${
+                      selectedFrameIndex === index
+                        ? "border-cyan-400"
+                        : "border-slate-700"
+                    }`}
+                  >
+                    <img
+                      src={frame.imageDataUrl}
+                      alt={`Quadro aos ${formatTime(
+                        frame.timeSeconds
+                      )}`}
+                      className="w-full"
+                    />
+
+                    <div className="p-3">
+                      <p className="font-semibold text-cyan-400">
+                        {formatTime(
+                          frame.timeSeconds
+                        )}
+                      </p>
+
+                      <p className="mt-1 text-xs text-slate-400">
+                        {frame.width} × {frame.height}
+                      </p>
+                    </div>
+                  </button>
+                )
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* DETALHES */}
 
         {selectedFrame && selectedHud && (
           <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
-            <p className="font-semibold tracking-widest text-cyan-400">
-              APEX AI HUD DETECTOR
-            </p>
-
-            <h2 className="mt-3 text-2xl font-bold">
-              4. Conferir recortes e leituras
+            <h2 className="text-xl font-bold">
+              5. Conferir leitura do HUD
             </h2>
 
             <p className="mt-3 text-slate-400">
-              Quadro selecionado:{" "}
-              <span className="font-bold text-cyan-400">
-                {selectedHud.timeSeconds.toFixed(3)} s
-              </span>
+              Instante:{" "}
+              {formatTime(
+                selectedFrame.timeSeconds
+              )}
             </p>
 
             {selectedOcr && (
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
-                <OcrResultCard
-                  label="Velocidade identificada"
+                <ResultCard
+                  label="Velocidade"
                   unit="km/h"
                   reading={selectedOcr.speed}
                 />
 
-                <OcrResultCard
-                  label="Marcha identificada"
+                <ResultCard
+                  label="Marcha"
                   unit=""
                   reading={selectedOcr.gear}
                 />
               </div>
             )}
 
-            <div className="mt-6 rounded-xl border border-slate-700 bg-slate-950 p-4">
+            <div className="mt-6 rounded-xl bg-slate-950 p-4">
               <p className="mb-4 font-semibold">
                 Imagem original
               </p>
 
               <img
-                src={selectedFrame.imageDataUrl}
-                alt="Imagem original do ACC"
+                src={
+                  selectedFrame.imageDataUrl
+                }
+                alt="Imagem do ACC"
                 className="w-full rounded-lg"
               />
             </div>
 
-            <div className="mt-6 grid gap-5 sm:grid-cols-2">
-              {selectedHud.crops.map((crop) => (
-                <div
-                  key={crop.name}
-                  className="rounded-xl border border-slate-700 bg-slate-950 p-5"
-                >
-                  <h3 className="font-semibold text-cyan-400">
-                    {REGION_LABELS[crop.name]}
-                  </h3>
+            <div className="mt-5 grid gap-4 sm:grid-cols-2">
+              {selectedHud.crops.map(
+                (crop) => (
+                  <div
+                    key={crop.name}
+                    className="rounded-xl border border-slate-700 bg-slate-950 p-4"
+                  >
+                    <p className="font-semibold text-cyan-400">
+                      {
+                        REGION_LABELS[
+                          crop.name
+                        ]
+                      }
+                    </p>
 
-                  <p className="mt-2 text-xs text-slate-400">
-                    Recorte ampliado
-                  </p>
-
-                  <div className="mt-4 flex min-h-32 items-center justify-center overflow-hidden rounded-lg bg-black p-3">
-                    <img
-                      src={crop.imageDataUrl}
-                      alt={`Recorte de ${REGION_LABELS[crop.name]}`}
-                      className="max-h-64 max-w-full object-contain"
-                      style={{
-                        imageRendering: "pixelated",
-                      }}
-                    />
+                    <div className="mt-4 flex min-h-32 items-center justify-center overflow-hidden rounded-lg bg-black p-3">
+                      <img
+                        src={
+                          crop.imageDataUrl
+                        }
+                        alt={
+                          REGION_LABELS[
+                            crop.name
+                          ]
+                        }
+                        className="max-h-64 max-w-full object-contain"
+                        style={{
+                          imageRendering:
+                            "pixelated",
+                        }}
+                      />
+                    </div>
                   </div>
-
-                  <p className="mt-3 text-xs text-slate-500">
-                    Resolução:{" "}
-                    {crop.width} × {crop.height}
-                  </p>
-                </div>
-              ))}
+                )
+              )}
             </div>
-
-            <p className="mt-6 text-sm text-amber-300">
-              Ainda não usamos estas leituras
-              para avaliar a pilotagem.
-              Primeiro precisamos testar e
-              validar o reconhecimento.
-            </p>
           </section>
         )}
 
         <p className="mt-10 text-center text-xs text-slate-500">
-          Apex AI Vision · OCR experimental
+          Apex AI Vision · Protótipo de
+          análise por vídeo
         </p>
       </div>
     </main>
