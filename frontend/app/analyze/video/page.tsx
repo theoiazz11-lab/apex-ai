@@ -21,6 +21,18 @@ import {
   type ExtractedFrame,
 } from "../../../lib/video/frameExtractor";
 
+import {
+  SIMULATORS,
+  ACC_YEARS,
+  ACC_TRACKS,
+  ACC_CATEGORIES,
+  getCarsByCategory,
+  getCategoriesByYear,
+  getCarById,
+  isValidSessionSelection,
+  type SessionSelection,
+} from "../../../lib/simulators/simulatorData";
+
 type HudForm = {
   speed: string;
   gear: string;
@@ -60,6 +72,20 @@ const EMPTY_HUD: HudForm = {
   notes: "",
 };
 
+const EMPTY_SESSION: SessionSelection = {
+  simulatorId: "",
+  year: 0,
+  categoryId: "",
+  trackId: "",
+  carId: "",
+};
+
+const inputStyle =
+  "mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white";
+
+const sectionStyle =
+  "mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8";
+
 function MetricField({
   label,
   value,
@@ -80,8 +106,10 @@ function MetricField({
         step="any"
         value={value}
         placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-        className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white"
+        onChange={(event) =>
+          onChange(event.target.value)
+        }
+        className={inputStyle}
       />
     </label>
   );
@@ -96,50 +124,181 @@ function parseHudNumber(
 ): number | undefined {
   if (value.trim() === "") {
     if (required) {
-      throw new Error(`Preencha o campo ${label}.`);
+      throw new Error(
+        `Preencha o campo ${label}.`
+      );
     }
 
     return undefined;
   }
 
-  const number = Number(value);
+  const parsed = Number(value);
 
   if (
-    !Number.isFinite(number) ||
-    number < minimum ||
-    number > maximum
+    !Number.isFinite(parsed) ||
+    parsed < minimum ||
+    parsed > maximum
   ) {
-    throw new Error(`Confira o valor de ${label}.`);
+    throw new Error(
+      `Confira o valor de ${label}.`
+    );
   }
 
-  return number;
+  return parsed;
 }
 
 export default function VideoAnalysisPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  const [file, setFile] = useState<File | null>(null);
+  // Configuracao da sessao
+
+  const [session, setSession] =
+    useState<SessionSelection>(EMPTY_SESSION);
+
+  // Video e metadados
+
+  const [file, setFile] =
+    useState<File | null>(null);
+
   const [videoUrl, setVideoUrl] = useState("");
 
   const [metadata, setMetadata] =
     useState<VideoMetadata | null>(null);
 
-  const [startSeconds, setStartSeconds] = useState(0);
-  const [endSeconds, setEndSeconds] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
+  const [startSeconds, setStartSeconds] =
+    useState(0);
+
+  const [endSeconds, setEndSeconds] =
+    useState(0);
+
+  const [currentTime, setCurrentTime] =
+    useState(0);
 
   const [result, setResult] =
     useState<VideoAnalysisResult | null>(null);
 
+  // Captura de HUD
+
   const [frame, setFrame] =
     useState<ExtractedFrame | null>(null);
 
-  const [hud, setHud] = useState<HudForm>(EMPTY_HUD);
-  const [readings, setReadings] = useState<HudReading[]>([]);
+  const [hud, setHud] =
+    useState<HudForm>({ ...EMPTY_HUD });
 
-  const [loading, setLoading] = useState(false);
-  const [capturing, setCapturing] = useState(false);
+  const [readings, setReadings] =
+    useState<HudReading[]>([]);
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [capturing, setCapturing] =
+    useState(false);
+
   const [error, setError] = useState("");
+
+  // Filtros automaticos
+
+  const availableCategories =
+    session.year > 0
+      ? getCategoriesByYear(session.year)
+      : [];
+
+  const availableCars =
+    session.categoryId && session.year > 0
+      ? getCarsByCategory(
+          session.categoryId,
+          session.year
+        )
+      : [];
+
+  const validSession =
+    isValidSessionSelection(session);
+
+  const selectedSimulator = SIMULATORS.find(
+    (item) => item.id === session.simulatorId
+  );
+
+  const selectedTrack = ACC_TRACKS.find(
+    (item) => item.id === session.trackId
+  );
+
+  const selectedCategory = ACC_CATEGORIES.find(
+    (item) => item.id === session.categoryId
+  );
+
+  const selectedCar =
+    getCarById(session.carId);
+
+  function resetVideo() {
+    setFile(null);
+    setMetadata(null);
+    setVideoUrl("");
+    setStartSeconds(0);
+    setEndSeconds(0);
+    setCurrentTime(0);
+    setResult(null);
+    setFrame(null);
+    setHud({ ...EMPTY_HUD });
+    setReadings([]);
+    setError("");
+  }
+
+  // Atualiza as selecoes e evita
+  // combinacoes de ano/categoria/carro
+  // que nao pertencam ao mesmo filtro.
+
+  function changeSimulator(value: string) {
+    setSession({
+      ...EMPTY_SESSION,
+      simulatorId: value,
+    });
+
+    resetVideo();
+  }
+
+  function changeYear(value: string) {
+    const year = Number(value);
+
+    setSession((previous) => ({
+      ...previous,
+      year,
+      categoryId: "",
+      carId: "",
+    }));
+
+    resetVideo();
+  }
+
+  function changeCategory(value: string) {
+    setSession((previous) => ({
+      ...previous,
+      categoryId: value,
+      carId: "",
+    }));
+
+    resetVideo();
+  }
+
+  function changeTrack(value: string) {
+    setSession((previous) => ({
+      ...previous,
+      trackId: value,
+    }));
+
+    resetVideo();
+  }
+
+  function changeCar(value: string) {
+    setSession((previous) => ({
+      ...previous,
+      carId: value,
+    }));
+
+    resetVideo();
+  }
+
+  // Cria URL temporaria do arquivo
+  // para reproduzir no navegador.
 
   useEffect(() => {
     if (!file) {
@@ -155,6 +314,8 @@ export default function VideoAnalysisPage() {
       URL.revokeObjectURL(url);
     };
   }, [file]);
+
+  // Leitura dos metadados do video.
 
   useEffect(() => {
     if (!file) {
@@ -173,7 +334,8 @@ export default function VideoAnalysisPage() {
       setError("");
 
       try {
-        const info = await readVideoMetadata(selectedFile);
+        const info =
+          await readVideoMetadata(selectedFile);
 
         if (cancelled) return;
 
@@ -186,7 +348,7 @@ export default function VideoAnalysisPage() {
         setError(
           caughtError instanceof Error
             ? caughtError.message
-            : "Não foi possível abrir o vídeo."
+            : "Nao foi possivel abrir o video."
         );
       } finally {
         if (!cancelled) {
@@ -205,7 +367,17 @@ export default function VideoAnalysisPage() {
   function handleFileChange(
     event: ChangeEvent<HTMLInputElement>
   ) {
-    setFile(event.target.files?.[0] ?? null);
+    if (!validSession) {
+      setError(
+        "Preencha a configuracao da sessao primeiro."
+      );
+      return;
+    }
+
+    setFile(
+      event.target.files?.[0] ?? null
+    );
+
     setCurrentTime(0);
     setStartSeconds(0);
     setEndSeconds(0);
@@ -227,14 +399,19 @@ export default function VideoAnalysisPage() {
 
     const safeTime = Math.max(
       0,
-      Math.min(seconds, metadata.durationSeconds)
+      Math.min(
+        seconds,
+        metadata.durationSeconds
+      )
     );
 
     videoRef.current.currentTime = safeTime;
     setCurrentTime(safeTime);
   }
 
-  function markBoundary(which: "start" | "end") {
+  function markBoundary(
+    which: "start" | "end"
+  ) {
     if (!videoRef.current) return;
 
     const time = Number(
@@ -252,14 +429,20 @@ export default function VideoAnalysisPage() {
   }
 
   function analyzeVideo() {
-    if (!metadata) return;
+    if (!metadata || !validSession) {
+      setError(
+        "Configure a sessao e envie um video."
+      );
+      return;
+    }
 
     try {
-      const analysis = prepareVideoAnalysis(
-        metadata,
-        startSeconds,
-        endSeconds
-      );
+      const analysis =
+        prepareVideoAnalysis(
+          metadata,
+          startSeconds,
+          endSeconds
+        );
 
       setResult(analysis);
       setError("");
@@ -269,13 +452,19 @@ export default function VideoAnalysisPage() {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Não foi possível preparar a volta."
+          : "Nao foi possivel preparar a volta."
       );
     }
   }
 
   async function captureHudFrame() {
-    if (!file || !metadata || capturing) return;
+    if (
+      !file ||
+      !metadata ||
+      capturing
+    ) {
+      return;
+    }
 
     setCapturing(true);
     setError("");
@@ -286,26 +475,28 @@ export default function VideoAnalysisPage() {
       const requestedTime = Math.max(
         0,
         Math.min(
-          videoRef.current?.currentTime ?? currentTime,
+          videoRef.current?.currentTime ??
+            currentTime,
           metadata.durationSeconds - 0.05
         )
       );
 
-      const captured = await extractVideoFrame(
-        file,
-        requestedTime,
-        {
-          maxWidth: 1920,
-          quality: 0.9,
-        }
-      );
+      const captured =
+        await extractVideoFrame(
+          file,
+          requestedTime,
+          {
+            maxWidth: 1920,
+            quality: 0.9,
+          }
+        );
 
       setFrame(captured);
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Não foi possível capturar a imagem."
+          : "Nao foi possivel capturar a imagem."
       );
     } finally {
       setCapturing(false);
@@ -344,7 +535,7 @@ export default function VideoAnalysisPage() {
 
       if (!Number.isInteger(gear)) {
         throw new Error(
-          "A marcha deve ser um número inteiro (-1 a 10)."
+          "A marcha precisa ser um numero inteiro."
         );
       }
 
@@ -357,7 +548,7 @@ export default function VideoAnalysisPage() {
 
       const fuel = parseHudNumber(
         hud.fuel,
-        "combustível",
+        "combustivel",
         0,
         250
       );
@@ -413,7 +604,7 @@ export default function VideoAnalysisPage() {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Não foi possível registrar a leitura."
+          : "Nao foi possivel registrar a leitura."
       );
     }
   }
@@ -428,7 +619,7 @@ export default function VideoAnalysisPage() {
           href="/analyze"
           className="text-sm text-slate-400 hover:text-white"
         >
-          ← Voltar à análise de telemetria
+          ← Voltar a telemetria
         </a>
 
         <p className="mt-10 font-bold tracking-widest text-cyan-400">
@@ -436,34 +627,265 @@ export default function VideoAnalysisPage() {
         </p>
 
         <h1 className="mt-4 text-3xl font-bold sm:text-4xl">
-          Análise de vídeo
+          Analise de video
         </h1>
 
         <p className="mt-4 text-slate-400">
-          Prepare uma gravação do ACC, incluindo
-          vídeos do PlayStation 5.
+          Configure sua sessao, envie uma
+          gravacao do ACC e prepare sua volta.
         </p>
 
-        <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
-          <h2 className="text-2xl font-semibold">
-            1. Enviar vídeo
+        {/* SECAO 1 - CONFIGURACAO */}
+
+        <section className={sectionStyle}>
+          <p className="font-semibold tracking-widest text-cyan-400">
+            APEX AI SESSION
+          </p>
+
+          <h2 className="mt-3 text-2xl font-bold">
+            1. Configurar sessao
           </h2>
 
           <p className="mt-3 text-sm text-slate-400">
-            Escolha uma gravação MP4, MOV ou WEBM
-            de até 500 MB.
+            Escolha o jogo, o ano do modelo,
+            a categoria, a pista e o carro.
+            A lista de carros sera filtrada
+            automaticamente.
           </p>
 
-          <input
-            type="file"
-            accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
-            onChange={handleFileChange}
-            className="mt-6 block w-full text-sm"
-          />
+          <div className="mt-6 grid gap-5 sm:grid-cols-2">
+            <label className="block text-sm text-slate-300">
+              Jogo
+
+              <select
+                value={session.simulatorId}
+                onChange={(event) =>
+                  changeSimulator(
+                    event.target.value
+                  )
+                }
+                className={inputStyle}
+              >
+                <option value="">
+                  Selecione o jogo
+                </option>
+
+                {SIMULATORS.map((simulator) => (
+                  <option
+                    key={simulator.id}
+                    value={simulator.id}
+                  >
+                    {simulator.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm text-slate-300">
+              Ano do modelo
+
+              <select
+                value={session.year || ""}
+                disabled={!session.simulatorId}
+                onChange={(event) =>
+                  changeYear(event.target.value)
+                }
+                className={inputStyle}
+              >
+                <option value="">
+                  Selecione o ano
+                </option>
+
+                {ACC_YEARS.map((year) => (
+                  <option
+                    key={year}
+                    value={year}
+                  >
+                    {year}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm text-slate-300">
+              Categoria
+
+              <select
+                value={session.categoryId}
+                disabled={!session.year}
+                onChange={(event) =>
+                  changeCategory(
+                    event.target.value
+                  )
+                }
+                className={inputStyle}
+              >
+                <option value="">
+                  Selecione a categoria
+                </option>
+
+                {availableCategories.map(
+                  (category) => (
+                    <option
+                      key={category.id}
+                      value={category.id}
+                    >
+                      {category.name}
+                    </option>
+                  )
+                )}
+              </select>
+            </label>
+
+            <label className="block text-sm text-slate-300">
+              Pista
+
+              <select
+                value={session.trackId}
+                disabled={!session.simulatorId}
+                onChange={(event) =>
+                  changeTrack(
+                    event.target.value
+                  )
+                }
+                className={inputStyle}
+              >
+                <option value="">
+                  Selecione a pista
+                </option>
+
+                {ACC_TRACKS.map((track) => (
+                  <option
+                    key={track.id}
+                    value={track.id}
+                  >
+                    {track.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm text-slate-300 sm:col-span-2">
+              Carro
+
+              <select
+                value={session.carId}
+                disabled={
+                  !session.year ||
+                  !session.categoryId
+                }
+                onChange={(event) =>
+                  changeCar(event.target.value)
+                }
+                className={inputStyle}
+              >
+                <option value="">
+                  Selecione o carro
+                </option>
+
+                {availableCars.map((car) => (
+                  <option
+                    key={car.id}
+                    value={car.id}
+                  >
+                    {car.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {session.year > 0 &&
+            session.categoryId &&
+            availableCars.length === 0 && (
+              <p className="mt-4 text-amber-300">
+                Nenhum carro encontrado
+                para essa combinacao.
+              </p>
+            )}
+
+          {validSession && (
+            <div className="mt-6 rounded-xl border border-green-800 bg-slate-950 p-5">
+              <p className="font-semibold text-green-400">
+                Sessao configurada!
+              </p>
+
+              <p className="mt-3 text-sm text-slate-300">
+                {selectedSimulator?.name}
+              </p>
+
+              <p className="mt-2 text-sm text-slate-300">
+                Ano: {session.year}
+              </p>
+
+              <p className="mt-2 text-sm text-slate-300">
+                Categoria:{" "}
+                {selectedCategory?.name}
+              </p>
+
+              <p className="mt-2 text-sm text-slate-300">
+                Pista: {selectedTrack?.name}
+              </p>
+
+              <p className="mt-2 text-sm text-slate-300">
+                Carro: {selectedCar?.name}
+              </p>
+
+              {selectedCar?.dlc && (
+                <p className="mt-3 text-xs text-amber-300">
+                  Pacote associado:{" "}
+                  {selectedCar.dlc}
+                </p>
+              )}
+            </div>
+          )}
+
+          <p className="mt-4 text-xs text-slate-500">
+            O filtro utiliza o ano do
+            modelo, nao a temporada oficial
+            de um campeonato.
+          </p>
+        </section>
+
+        {/* SECAO 2 - VIDEO */}
+
+        <section className={sectionStyle}>
+          <h2 className="text-2xl font-bold">
+            2. Enviar video
+          </h2>
+
+          <p className="mt-3 text-sm text-slate-400">
+            Primeiro configure sua sessao.
+            Depois selecione um video MP4,
+            MOV ou WEBM de ate 500 MB.
+          </p>
+
+          {!validSession && (
+            <p className="mt-4 text-amber-300">
+              Preencha os cinco campos
+              acima para liberar o envio.
+            </p>
+          )}
+
+          {validSession && (
+            <input
+              key={
+                session.simulatorId +
+                session.year +
+                session.categoryId +
+                session.trackId +
+                session.carId
+              }
+              type="file"
+              accept=".mp4,.mov,.webm,video/mp4,video/quicktime,video/webm"
+              onChange={handleFileChange}
+              className="mt-6 block w-full text-sm"
+            />
+          )}
 
           {loading && (
             <p className="mt-4 text-cyan-400">
-              Lendo vídeo...
+              Lendo video...
             </p>
           )}
 
@@ -490,7 +912,7 @@ export default function VideoAnalysisPage() {
 
               <div className="rounded-xl bg-slate-950 p-4">
                 <p className="text-xs text-slate-400">
-                  Duração
+                  Duracao
                 </p>
 
                 <p className="mt-1 font-bold">
@@ -502,11 +924,12 @@ export default function VideoAnalysisPage() {
 
               <div className="rounded-xl bg-slate-950 p-4">
                 <p className="text-xs text-slate-400">
-                  Resolução
+                  Resolucao
                 </p>
 
                 <p className="mt-1 font-medium">
-                  {metadata.width} × {metadata.height}
+                  {metadata.width} x{" "}
+                  {metadata.height}
                 </p>
               </div>
 
@@ -525,14 +948,17 @@ export default function VideoAnalysisPage() {
 
         {videoUrl && metadata && (
           <>
-            <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
-              <h2 className="text-2xl font-semibold">
-                2. Revisar a gravação
+            {/* SECAO 3 - REPRODUCAO */}
+
+            <section className={sectionStyle}>
+              <h2 className="text-2xl font-bold">
+                3. Revisar gravacao
               </h2>
 
               <p className="mt-3 text-sm text-slate-400">
-                Assista ao vídeo e localize os
-                momentos importantes da volta.
+                Assista ao video e
+                localize os momentos
+                importantes da volta.
               </p>
 
               <video
@@ -551,7 +977,7 @@ export default function VideoAnalysisPage() {
 
               <div className="mt-5 rounded-xl bg-slate-950 p-4">
                 <p className="text-sm text-slate-400">
-                  Posição atual do vídeo
+                  Posicao atual do video
                 </p>
 
                 <p className="mt-1 text-2xl font-bold text-cyan-400">
@@ -560,7 +986,7 @@ export default function VideoAnalysisPage() {
 
                 <input
                   type="range"
-                  aria-label="Posição no vídeo"
+                  aria-label="Posicao no video"
                   min={0}
                   max={metadata.durationSeconds}
                   step={0.001}
@@ -578,14 +1004,16 @@ export default function VideoAnalysisPage() {
               </div>
             </section>
 
-            <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
-              <h2 className="text-2xl font-semibold">
-                3. Definir início e fim da volta
+            {/* SECAO 4 - VOLTA */}
+
+            <section className={sectionStyle}>
+              <h2 className="text-2xl font-bold">
+                4. Definir inicio e fim
               </h2>
 
               <p className="mt-3 text-sm text-slate-400">
-                Pause o vídeo no início e no fim
-                da volta para marcar o intervalo.
+                Pause o video nos pontos
+                de inicio e fim da volta.
               </p>
 
               <div className="mt-6 grid gap-5 sm:grid-cols-2">
@@ -594,7 +1022,7 @@ export default function VideoAnalysisPage() {
                     htmlFor="lap-start"
                     className="font-semibold text-green-400"
                   >
-                    Início da volta (segundos)
+                    Inicio da volta (segundos)
                   </label>
 
                   <input
@@ -610,23 +1038,27 @@ export default function VideoAnalysisPage() {
                       );
                       setResult(null);
                     }}
-                    className="mt-3 w-full rounded-lg border border-slate-600 bg-slate-900 p-3"
+                    className={inputStyle}
                   />
 
                   <button
                     type="button"
-                    onClick={() => markBoundary("start")}
+                    onClick={() =>
+                      markBoundary("start")
+                    }
                     className="mt-4 w-full rounded-lg bg-green-600 px-4 py-3 font-semibold hover:bg-green-500"
                   >
-                    Marcar início aqui
+                    Marcar inicio aqui
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => jumpToTime(startSeconds)}
+                    onClick={() =>
+                      jumpToTime(startSeconds)
+                    }
                     className="mt-3 w-full rounded-lg border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
                   >
-                    Ver início no vídeo
+                    Ver inicio no video
                   </button>
                 </div>
 
@@ -651,12 +1083,14 @@ export default function VideoAnalysisPage() {
                       );
                       setResult(null);
                     }}
-                    className="mt-3 w-full rounded-lg border border-slate-600 bg-slate-900 p-3"
+                    className={inputStyle}
                   />
 
                   <button
                     type="button"
-                    onClick={() => markBoundary("end")}
+                    onClick={() =>
+                      markBoundary("end")
+                    }
                     className="mt-4 w-full rounded-lg bg-red-600 px-4 py-3 font-semibold hover:bg-red-500"
                   >
                     Marcar fim aqui
@@ -664,28 +1098,32 @@ export default function VideoAnalysisPage() {
 
                   <button
                     type="button"
-                    onClick={() => jumpToTime(endSeconds)}
+                    onClick={() =>
+                      jumpToTime(endSeconds)
+                    }
                     className="mt-3 w-full rounded-lg border border-slate-600 px-4 py-2 text-sm hover:bg-slate-800"
                   >
-                    Ver fim no vídeo
+                    Ver fim no video
                   </button>
                 </div>
               </div>
 
               <div className="mt-6 rounded-xl bg-slate-950 p-6 text-center">
                 <p className="text-sm text-slate-400">
-                  Tempo do intervalo selecionado
+                  Tempo selecionado
                 </p>
 
                 <p className="mt-2 text-4xl font-bold text-cyan-400">
                   {selectedDuration > 0
-                    ? formatLapTime(selectedDuration)
+                    ? formatLapTime(
+                        selectedDuration
+                      )
                     : "--:--.---"}
                 </p>
 
                 <p className="mt-3 text-xs text-slate-500">
-                  O tempo só corresponde à volta
-                  real se os pontos estiverem corretos.
+                  O tempo depende dos
+                  pontos escolhidos no video.
                 </p>
               </div>
 
@@ -694,22 +1132,24 @@ export default function VideoAnalysisPage() {
                 onClick={analyzeVideo}
                 className="mt-6 w-full rounded-xl bg-cyan-500 px-6 py-4 text-lg font-bold text-slate-950 hover:bg-cyan-400"
               >
-                Preparar análise da volta
+                Preparar analise da volta
               </button>
             </section>
 
-            <section className="mt-8 rounded-2xl border border-cyan-800 bg-slate-900 p-6 sm:p-8">
+            {/* SECAO 5 - HUD */}
+
+            <section className={sectionStyle}>
               <p className="font-semibold tracking-widest text-cyan-400">
                 APEX AI VISION
               </p>
 
               <h2 className="mt-3 text-2xl font-bold">
-                4. Capturar imagem do HUD
+                5. Capturar imagem do HUD
               </h2>
 
               <p className="mt-3 text-sm text-slate-400">
-                Pause o vídeo no instante desejado
-                e capture uma imagem do painel.
+                Pause o video e capture
+                uma imagem do painel.
               </p>
 
               <p className="mt-5 text-sm">
@@ -738,44 +1178,51 @@ export default function VideoAnalysisPage() {
 
                   <p className="mt-2 text-sm text-slate-400">
                     Instante:{" "}
-                    {formatLapTime(frame.timeSeconds)}
+                    {formatLapTime(
+                      frame.timeSeconds
+                    )}
                   </p>
 
                   <img
                     src={frame.imageDataUrl}
-                    alt="Quadro extraído da gravação do ACC"
+                    alt="Quadro extraido do ACC"
                     className="mt-4 w-full rounded-lg"
                   />
 
                   <p className="mt-3 text-xs text-slate-500">
-                    A captura acontece no navegador.
-                    Ainda não há leitura automática
-                    dos números.
+                    Captura local no
+                    navegador. A leitura
+                    automatica sera
+                    desenvolvida depois.
                   </p>
                 </div>
               )}
             </section>
 
+            {/* SECAO 6 - LEITURA MANUAL */}
+
             {frame && (
-              <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
+              <section className={sectionStyle}>
                 <p className="font-semibold tracking-widest text-cyan-400">
                   APEX AI HUD
                 </p>
 
                 <h2 className="mt-3 text-2xl font-bold">
-                  5. Leitura experimental do HUD
+                  6. Leitura experimental
                 </h2>
 
                 <p className="mt-3 text-sm text-slate-400">
-                  Observe a imagem capturada acima
-                  e digite os valores que conseguir ler.
-                  Esta é uma anotação manual,
-                  não um reconhecimento por IA.
+                  Digite os dados visiveis
+                  no quadro. Essa etapa
+                  e manual e sera
+                  automatizada futuramente.
                 </p>
 
                 <p className="mt-4 text-sm text-cyan-400">
                   Quadro:{" "}
-                  {formatLapTime(frame.timeSeconds)}
+                  {formatLapTime(
+                    frame.timeSeconds
+                  )}
                 </p>
 
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -783,16 +1230,22 @@ export default function VideoAnalysisPage() {
                     label="Velocidade (km/h) *"
                     value={hud.speed}
                     onChange={(value) =>
-                      updateHud("speed", value)
+                      updateHud(
+                        "speed",
+                        value
+                      )
                     }
                     placeholder="Ex.: 171"
                   />
 
                   <MetricField
-                    label="Marcha * (-1 a 10; 0 = neutro)"
+                    label="Marcha * (-1 a 10)"
                     value={hud.gear}
                     onChange={(value) =>
-                      updateHud("gear", value)
+                      updateHud(
+                        "gear",
+                        value
+                      )
                     }
                     placeholder="Ex.: 3"
                   />
@@ -801,22 +1254,27 @@ export default function VideoAnalysisPage() {
                     label="RPM (opcional)"
                     value={hud.rpm}
                     onChange={(value) =>
-                      updateHud("rpm", value)
+                      updateHud(
+                        "rpm",
+                        value
+                      )
                     }
-                    placeholder="Ex.: 6815"
                   />
 
                   <MetricField
-                    label="Combustível em litros (opcional)"
+                    label="Combustivel (L)"
                     value={hud.fuel}
                     onChange={(value) =>
-                      updateHud("fuel", value)
+                      updateHud(
+                        "fuel",
+                        value
+                      )
                     }
                   />
                 </div>
 
                 <h3 className="mt-6 font-semibold">
-                  Pressão dos pneus em psi (opcional)
+                  Pressao dos pneus (psi)
                 </h3>
 
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -824,7 +1282,10 @@ export default function VideoAnalysisPage() {
                     label="Dianteiro esquerdo"
                     value={hud.frontLeft}
                     onChange={(value) =>
-                      updateHud("frontLeft", value)
+                      updateHud(
+                        "frontLeft",
+                        value
+                      )
                     }
                   />
 
@@ -832,7 +1293,10 @@ export default function VideoAnalysisPage() {
                     label="Dianteiro direito"
                     value={hud.frontRight}
                     onChange={(value) =>
-                      updateHud("frontRight", value)
+                      updateHud(
+                        "frontRight",
+                        value
+                      )
                     }
                   />
 
@@ -840,7 +1304,10 @@ export default function VideoAnalysisPage() {
                     label="Traseiro esquerdo"
                     value={hud.rearLeft}
                     onChange={(value) =>
-                      updateHud("rearLeft", value)
+                      updateHud(
+                        "rearLeft",
+                        value
+                      )
                     }
                   />
 
@@ -848,28 +1315,30 @@ export default function VideoAnalysisPage() {
                     label="Traseiro direito"
                     value={hud.rearRight}
                     onChange={(value) =>
-                      updateHud("rearRight", value)
+                      updateHud(
+                        "rearRight",
+                        value
+                      )
                     }
                   />
                 </div>
 
                 <label className="mt-6 block text-sm text-slate-300">
-                  Observações (opcional)
+                  Observacoes (opcional)
 
                   <textarea
                     rows={3}
                     value={hud.notes}
                     onChange={(event) =>
-                      updateHud("notes", event.target.value)
+                      updateHud(
+                        "notes",
+                        event.target.value
+                      )
                     }
-                    placeholder="Ex.: saída da curva, início da aceleração..."
-                    className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-950 p-3 text-white"
+                    className={inputStyle}
+                    placeholder="Ex.: saida da curva..."
                   />
                 </label>
-
-                <p className="mt-3 text-xs text-slate-500">
-                  * Campos obrigatórios
-                </p>
 
                 <button
                   type="button"
@@ -881,84 +1350,101 @@ export default function VideoAnalysisPage() {
               </section>
             )}
 
+            {/* LEITURAS SALVAS NA SESSAO */}
+
             {readings.length > 0 && (
-              <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
+              <section className={sectionStyle}>
                 <h2 className="text-2xl font-bold text-cyan-400">
-                  Leituras registradas nesta sessão
+                  Leituras registradas
                 </h2>
 
                 <p className="mt-3 text-sm text-slate-400">
-                  Esses registros foram digitados
-                  por você. Eles não são salvos em
-                  uma conta e serão perdidos ao
-                  atualizar a página.
+                  Dados anotados manualmente.
+                  Eles ficam apenas nesta
+                  sessao do navegador.
                 </p>
 
                 <div className="mt-5 space-y-3">
-                  {readings.map((reading, index) => (
-                    <div
-                      key={index}
-                      className="rounded-xl border border-slate-700 bg-slate-950 p-4"
-                    >
-                      <p className="font-semibold text-cyan-400">
-                        {formatLapTime(
-                          reading.videoTime
+                  {readings.map(
+                    (reading, index) => (
+                      <div
+                        key={index}
+                        className="rounded-xl border border-slate-700 bg-slate-950 p-4"
+                      >
+                        <p className="font-semibold text-cyan-400">
+                          {formatLapTime(
+                            reading.videoTime
+                          )}
+                        </p>
+
+                        <p className="mt-2">
+                          {reading.speed} km/h
+                          {" · "}
+                          Marcha{" "}
+                          {reading.gear === 0
+                            ? "N"
+                            : reading.gear === -1
+                              ? "R"
+                              : reading.gear}
+                        </p>
+
+                        {reading.rpm !==
+                          undefined && (
+                          <p className="text-sm text-slate-300">
+                            RPM:{" "}
+                            {reading.rpm}
+                          </p>
                         )}
-                      </p>
 
-                      <p className="mt-2">
-                        {reading.speed} km/h · Marcha{" "}
-                        {reading.gear === 0
-                          ? "N"
-                          : reading.gear === -1
-                            ? "R"
-                            : reading.gear}
-                      </p>
+                        {reading.fuel !==
+                          undefined && (
+                          <p className="text-sm text-slate-300">
+                            Combustivel:{" "}
+                            {reading.fuel} L
+                          </p>
+                        )}
 
-                      {reading.rpm !== undefined && (
-                        <p className="text-sm text-slate-300">
-                          RPM: {reading.rpm}
-                        </p>
-                      )}
+                        {Object.values(
+                          reading.pressures
+                        ).some(
+                          (value) =>
+                            value !== undefined
+                        ) && (
+                          <p className="mt-1 text-sm text-slate-300">
+                            Pneus (psi):
+                            {" DE: "}
+                            {reading.pressures
+                              .frontLeft ?? "—"}
+                            {" | DD: "}
+                            {reading.pressures
+                              .frontRight ?? "—"}
+                            {" | TE: "}
+                            {reading.pressures
+                              .rearLeft ?? "—"}
+                            {" | TD: "}
+                            {reading.pressures
+                              .rearRight ?? "—"}
+                          </p>
+                        )}
 
-                      {reading.fuel !== undefined && (
-                        <p className="text-sm text-slate-300">
-                          Combustível: {reading.fuel} L
-                        </p>
-                      )}
-
-                      {Object.values(
-                        reading.pressures
-                      ).some(
-                        (value) => value !== undefined
-                      ) && (
-                        <p className="mt-1 text-sm text-slate-300">
-                          Pneus (psi) DE:{" "}
-                          {reading.pressures.frontLeft ?? "—"}{" "}
-                          · DD:{" "}
-                          {reading.pressures.frontRight ?? "—"}{" "}
-                          · TE:{" "}
-                          {reading.pressures.rearLeft ?? "—"}{" "}
-                          · TD:{" "}
-                          {reading.pressures.rearRight ?? "—"}
-                        </p>
-                      )}
-
-                      {reading.notes && (
-                        <p className="mt-2 text-sm text-slate-400">
-                          {reading.notes}
-                        </p>
-                      )}
-                    </div>
-                  ))}
+                        {reading.notes && (
+                          <p className="mt-2 text-sm text-slate-400">
+                            {reading.notes}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  )}
                 </div>
               </section>
             )}
           </>
         )}
 
+        {/* RESULTADO DO INTERVALO */}
+
         {result && (
-          <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6 sm:p-8">
+          <section className={sectionStyle}>
             <p className="font-semibold tracking-widest text-cyan-400">
               APEX AI VIDEO
             </p>
@@ -975,7 +1461,7 @@ export default function VideoAnalysisPage() {
 
             <div className="mt-5 space-y-2 text-sm text-slate-300">
               <p>
-                Início:{" "}
+                Inicio:{" "}
                 {formatLapTime(
                   result.lap.startSeconds
                 )}
@@ -989,13 +1475,19 @@ export default function VideoAnalysisPage() {
               </p>
 
               <p>
-                Trecho excluído do começo:{" "}
-                {result.lap.excludedStartSeconds.toFixed(3)} s
+                Trecho excluido do comeco:{" "}
+                {result.lap.excludedStartSeconds.toFixed(
+                  3
+                )}{" "}
+                s
               </p>
 
               <p>
-                Trecho excluído do final:{" "}
-                {result.lap.excludedEndSeconds.toFixed(3)} s
+                Trecho excluido do final:{" "}
+                {result.lap.excludedEndSeconds.toFixed(
+                  3
+                )}{" "}
+                s
               </p>
             </div>
 
@@ -1004,15 +1496,17 @@ export default function VideoAnalysisPage() {
             </p>
 
             <p className="mt-4 text-sm text-amber-300">
-              O sistema ainda não identifica
-              automaticamente erros de pilotagem.
-              O vídeo permanece no seu navegador.
+              Esta versao ainda nao
+              identifica automaticamente
+              erros de pilotagem.
+              O video permanece no
+              navegador.
             </p>
           </section>
         )}
 
         <p className="mt-10 text-center text-xs text-slate-500">
-          Apex AI · Módulo experimental de vídeo
+          Apex AI · Modulo experimental de video
         </p>
       </div>
     </main>
