@@ -3,18 +3,17 @@
  * APEX AI VISION
  * HUD Reader - Assetto Corsa Competizione
  *
- * Reconhecimento experimental de
- * velocidade e marcha por OCR.
+ * OCR experimental de velocidade e marcha.
  *
- * Atualizacao:
+ * Esta versao:
+ * - Preserva os recortes existentes.
+ * - Preserva a leitura das marchas.
  * - Identifica possiveis digitos perdidos.
- * - Compara leituras completas e parciais.
- * - Evita rejeitar uma maioria consistente
- *   apenas por uma leitura concorrente.
- * - Preserva a logica de marcha.
+ * - Rejeita conflitos fortes entre velocidades.
  * - Mantem diagnosticos no Console.
  *
- * Nenhuma velocidade e fixada no codigo.
+ * Uma leitura rejeitada nao deve ser usada
+ * para avaliar a pilotagem.
  */
 
 import { createWorker, PSM } from "tesseract.js";
@@ -106,6 +105,11 @@ const DEFAULT_MINIMUM_CONFIDENCE = 50;
 const MAX_SPEED = 400;
 const DEBUG_OCR = true;
 
+/**
+ * Nove tratamentos de velocidade.
+ * Mantidos para permitir comparacao
+ * com os testes anteriores.
+ */
 const SPEED_PREPARATIONS: Preparation[] = [
   {
     region: {
@@ -214,7 +218,8 @@ const SPEED_PREPARATIONS: Preparation[] = [
 ];
 
 /**
- * Tratamentos de marcha preservados.
+ * Tratamentos das marchas.
+ * Mantidos sem alteracao.
  */
 const GEAR_PREPARATIONS: Preparation[] = [
   {
@@ -299,17 +304,22 @@ function loadImage(
 
     image.onload = () => resolve(image);
 
-    image.onerror = () =>
+    image.onerror = () => {
       reject(
         new Error(
           "Nao foi possivel carregar a imagem."
         )
       );
+    };
 
     image.src = source;
   });
 }
 
+/**
+ * Prepara um recorte para o Tesseract.
+ * Utiliza Canvas no navegador.
+ */
 async function prepareImage(
   crop: HudCrop,
   preparation: Preparation
@@ -436,13 +446,13 @@ async function prepareImage(
   context.putImageData(pixels, 0, 0);
 
   if (mode === "legacy") {
-    const output =
+    const result =
       canvas.toDataURL("image/png");
 
     canvas.width = 0;
     canvas.height = 0;
 
-    return output;
+    return result;
   }
 
   const margin = 32;
@@ -484,7 +494,7 @@ async function prepareImage(
     margin
   );
 
-  const output =
+  const result =
     padded.toDataURL("image/png");
 
   canvas.width = 0;
@@ -493,7 +503,7 @@ async function prepareImage(
   padded.width = 0;
   padded.height = 0;
 
-  return output;
+  return result;
 }
 
 function parseOcrValue(
@@ -527,17 +537,20 @@ function parseOcrValue(
         )
       : 0;
 
+  // A velocidade participa da votacao
+  // mesmo se a confianca individual for
+  // baixa. A aceitacao ocorre depois.
   const confidenceAccepted =
     type === "speed" ||
     safeConfidence >= minimumConfidence;
 
+  const valid =
+    Number.isInteger(number) &&
+    validRange &&
+    confidenceAccepted;
+
   return {
-    value:
-      Number.isInteger(number) &&
-      validRange &&
-      confidenceAccepted
-        ? number
-        : null,
+    value: valid ? number : null,
     confidence: safeConfidence,
     rawText,
   };
@@ -562,8 +575,9 @@ function reject(
 }
 
 /**
- * Marchas: maior grupo de concordancia,
- * desempate por confianca.
+ * Marchas:
+ * - Maior numero de concordancias.
+ * - Desempate pela maior confianca.
  */
 function chooseGear(
   candidates: OcrCandidate[]
@@ -608,18 +622,19 @@ function chooseGear(
         return b[1].length - a[1].length;
       }
 
-      return (
-        Math.max(
-          ...b[1].map(
-            (item) => item.confidence
-          )
-        ) -
-        Math.max(
-          ...a[1].map(
-            (item) => item.confidence
-          )
+      const bestA = Math.max(
+        ...a[1].map(
+          (item) => item.confidence
         )
       );
+
+      const bestB = Math.max(
+        ...b[1].map(
+          (item) => item.confidence
+        )
+      );
+
+      return bestB - bestA;
     }
   );
 
@@ -642,9 +657,6 @@ function chooseGear(
   };
 }
 
-/**
- * Agrupa as velocidades por numero.
- */
 function groupSpeeds(
   candidates: OcrCandidate[]
 ): SpeedGroup[] {
@@ -656,11 +668,11 @@ function groupSpeeds(
   for (const item of candidates) {
     if (item.value === null) continue;
 
-    const current =
+    const group =
       groups.get(item.value) ?? [];
 
-    current.push(item);
-    groups.set(item.value, current);
+    group.push(item);
+    groups.set(item.value, group);
   }
 
   return [...groups.entries()].map(
@@ -692,17 +704,14 @@ function groupSpeeds(
 }
 
 /**
- * Um resultado pode ser apenas o final
- * de outro numero.
+ * Possivel perda de digitos a esquerda.
  *
- * Exemplo generico:
+ * Exemplo:
+ * "0" pode ser uma leitura parcial
+ * de "70".
  *
- * "0" e "70"
- * "17" e "217"
- *
- * Isso NAO prova que o numero mais longo
- * seja correto. Exigimos varias leituras
- * completas em tratamentos diferentes.
+ * Essa relacao nao prova que o numero
+ * mais longo esta correto.
  */
 function isPossibleTruncation(
   shorter: number,
@@ -717,11 +726,35 @@ function isPossibleTruncation(
   );
 }
 
+function rankGroups(
+  a: SpeedGroup,
+  b: SpeedGroup
+): number {
+  if (a.count !== b.count) {
+    return b.count - a.count;
+  }
+
+  if (a.families !== b.families) {
+    return b.families - a.families;
+  }
+
+  return (
+    b.averageConfidence -
+    a.averageConfidence
+  );
+}
+
 /**
- * Seleciona uma velocidade sem depender
- * apenas da confianca do Tesseract.
+ * NOVA VALIDACAO DE VELOCIDADE
  *
- * As regras continuam experimentais.
+ * - Considera todas as leituras plausiveis.
+ * - Detecta possiveis leituras parciais.
+ * - Exige apoio de varios tratamentos.
+ * - Rejeita uma maioria pequena diante
+ *   de outro numero bem sustentado.
+ *
+ * Nao usa valores especificos de uma
+ * volta, circuito ou piloto.
  */
 function chooseSpeed(
   candidates: OcrCandidate[],
@@ -750,41 +783,19 @@ function chooseSpeed(
     };
   }
 
-  /**
-   * Primeiro ordenamos pela quantidade
-   * de leituras concordantes.
-   */
-  groups.sort((a, b) => {
-    if (b.count !== a.count) {
-      return b.count - a.count;
-    }
-
-    if (b.families !== a.families) {
-      return b.families - a.families;
-    }
-
-    return (
-      b.averageConfidence -
-      a.averageConfidence
-    );
-  });
+  groups.sort(rankGroups);
 
   let winner = groups[0];
   let truncationDetected = false;
 
   /**
-   * Detectamos quando a leitura principal
-   * pode ter perdido os primeiros digitos.
-   *
-   * O numero completo precisa aparecer
-   * pelo menos 3 vezes, em pelo menos
-   * 2 tratamentos, com alguma confianca.
-   *
-   * A quantidade de votos nao pode ser
-   * muito inferior a da leitura parcial.
+   * Se o grupo mais votado for uma
+   * possivel leitura parcial, aceitamos
+   * considerar um numero mais completo
+   * apenas quando ele tem apoio forte.
    */
   for (const alternative of groups.slice(1)) {
-    const likelyTruncation =
+    const possibleTruncation =
       isPossibleTruncation(
         winner.value,
         alternative.value
@@ -797,59 +808,17 @@ function chooseSpeed(
       alternative.count >=
         winner.count - 1;
 
-    if (likelyTruncation && supported) {
+    if (possibleTruncation && supported) {
       winner = alternative;
       truncationDetected = true;
       break;
     }
   }
 
-  const competitors = groups
-    .filter(
-      (group) =>
-        group.value !== winner.value
-    )
-    .sort((a, b) => b.count - a.count);
-
-  const competitor = competitors[0];
-
   /**
-   * Rejeitamos empates significativos
-   * entre numeros diferentes.
-   *
-   * Se o concorrente for apenas um
-   * possivel recorte incompleto da
-   * leitura selecionada, nao tratamos
-   * essa coincidencia como empate real.
+   * Quantidade de evidencias para o
+   * numero escolhido.
    */
-  if (competitor) {
-    const partialCompetitor =
-      truncationDetected &&
-      isPossibleTruncation(
-        competitor.value,
-        winner.value
-      );
-
-    const significantConflict =
-      !partialCompetitor &&
-      competitor.count >= winner.count &&
-      competitor.families >= 2 &&
-      competitor.best.confidence >=
-        winner.best.confidence - 10;
-
-    if (significantConflict) {
-      return {
-        result: reject(winner.best),
-        decision:
-          `Conflito entre ` +
-          `${winner.value} e ` +
-          `${competitor.value}. ` +
-          `Evidencia insuficiente para ` +
-          `escolher com seguranca.`,
-      };
-    }
-  }
-
   const strongConsensus =
     winner.count >= 3 &&
     winner.families >= 2 &&
@@ -859,19 +828,11 @@ function chooseSpeed(
     winner.count >= 2 &&
     winner.families >= 2 &&
     winner.best.confidence >=
-      Math.max(85, minimumConfidence) &&
-    (
-      !competitor ||
-      competitor.count === 1
-    );
+      Math.max(85, minimumConfidence);
 
   const isolatedHighConfidence =
     winner.count === 1 &&
-    winner.best.confidence >= 90 &&
-    (
-      !competitor ||
-      competitor.count === 1
-    );
+    winner.best.confidence >= 90;
 
   if (
     !strongConsensus &&
@@ -881,17 +842,117 @@ function chooseSpeed(
     return {
       result: reject(winner.best),
       decision:
-        `Candidato ${winner.value} ` +
-        `rejeitado: ${winner.count} ` +
-        `tentativa(s), ` +
-        `${winner.families} tratamento(s), ` +
-        `confianca maxima ` +
-        `${winner.best.confidence.toFixed(1)}%.`,
+        `Leitura ${winner.value} rejeitada: ` +
+        `apoio insuficiente. ` +
+        `${winner.count} tentativa(s), ` +
+        `${winner.families} tratamento(s).`,
+    };
+  }
+
+  /**
+   * NOVA REGRA DE CONFLITOS
+   *
+   * Se o segundo grupo recebeu quase
+   * tantos votos quanto o primeiro,
+   * veio de tratamentos diferentes e
+   * tem confianca relevante, nao
+   * escolhemos automaticamente a maioria.
+   *
+   * Exemplo generico:
+   * 3 votos contra 2 votos.
+   *
+   * Isso pode representar um erro
+   * repetido em varias transformacoes
+   * da mesma imagem.
+   *
+   * Leituras parciais nao sao tratadas
+   * como concorrentes independentes
+   * quando houve correcao de truncamento.
+   */
+  const competitors = groups
+    .filter(
+      (group) =>
+        group.value !== winner.value
+    )
+    .sort(rankGroups);
+
+  const significantConflicts =
+    competitors.filter((competitor) => {
+      const partialReading =
+        truncationDetected &&
+        isPossibleTruncation(
+          competitor.value,
+          winner.value
+        );
+
+      if (partialReading) {
+        return false;
+      }
+
+      const similarSupport =
+        competitor.count >= 2 &&
+        competitor.count >=
+          winner.count - 1;
+
+      const multipleTreatments =
+        competitor.families >= 2;
+
+      const relevantConfidence =
+        competitor.best.confidence >=
+        Math.max(
+          30,
+          winner.best.confidence - 15
+        );
+
+      return (
+        similarSupport &&
+        multipleTreatments &&
+        relevantConfidence
+      );
+    });
+
+  if (significantConflicts.length > 0) {
+    const competitor =
+      significantConflicts[0];
+
+    return {
+      result: reject(winner.best),
+      decision:
+        `CONFLITO DE OCR: ${winner.value} ` +
+        `teve ${winner.count} voto(s), ` +
+        `mas ${competitor.value} teve ` +
+        `${competitor.count} voto(s). ` +
+        `Os dois numeros tem apoio de ` +
+        `tratamentos diferentes. ` +
+        `Resultado nao identificado ` +
+        `para evitar uma leitura incorreta.`,
+    };
+  }
+
+  /**
+   * Uma leitura isolada nao deve
+   * prevalecer se houver outro grupo
+   * com evidencias comparaveis.
+   */
+  if (
+    isolatedHighConfidence &&
+    competitors.some(
+      (item) =>
+        item.count >= 1 &&
+        item.best.confidence >=
+          winner.best.confidence - 10
+    )
+  ) {
+    return {
+      result: reject(winner.best),
+      decision:
+        `Leitura isolada ${winner.value} ` +
+        `rejeitada por ambiguidade.`,
     };
   }
 
   const method = truncationDetected
-    ? "possivel leitura parcial corrigida por consenso"
+    ? "correcao de possivel leitura parcial"
     : "concordancia entre tratamentos";
 
   return {
@@ -901,7 +962,7 @@ function chooseSpeed(
       rawText: winner.best.rawText,
     },
     decision:
-      `Velocidade ${winner.value} aceita: ` +
+      `Velocidade ${winner.value} aceita por ` +
       `${method}. ` +
       `${winner.count} tentativa(s), ` +
       `${winner.families} tratamento(s), ` +

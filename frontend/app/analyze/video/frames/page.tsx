@@ -3,6 +3,7 @@
 
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -26,6 +27,11 @@ import {
   type HudReadingResult,
 } from "../../../../lib/video/hudReader";
 
+import {
+  analyzeDrivingFromVideo,
+  type DrivingObservation,
+} from "../../../../lib/video/drivingAnalyzer";
+
 type AnalysisMode = "quick" | "full";
 
 type AnalysisStage =
@@ -37,6 +43,8 @@ type AnalysisStage =
 
 const MAX_VIDEO_SIZE = 500 * 1024 * 1024;
 const MAX_FRAMES = 40;
+const MIN_INTERVAL = 0.5;
+const MAX_INTERVAL = 30;
 
 const REGION_LABELS: Record<
   HudRegionName,
@@ -123,6 +131,49 @@ function ResultCard({
   );
 }
 
+function MetricCard({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-700 bg-slate-950 p-5">
+      <p className="text-sm text-slate-400">
+        {label}
+      </p>
+
+      <p className="mt-3 text-2xl font-bold text-cyan-400">
+        {value}
+      </p>
+
+      {detail && (
+        <p className="mt-2 text-xs text-slate-500">
+          {detail}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function observationLabel(
+  observation: DrivingObservation
+): string {
+  switch (observation.type) {
+    case "speed-increase":
+      return "Aumento observado";
+
+    case "speed-decrease":
+      return "Redução observada";
+
+    case "gear-change":
+      return "Mudança de marcha";
+  }
+}
+
 export default function VideoFramesPage() {
   const fileInputRef =
     useRef<HTMLInputElement>(null);
@@ -148,17 +199,14 @@ export default function VideoFramesPage() {
   const [intervalSeconds, setIntervalSeconds] =
     useState(10);
 
-  const [frames, setFrames] = useState<
-    ExtractedFrame[]
-  >([]);
+  const [frames, setFrames] =
+    useState<ExtractedFrame[]>([]);
 
-  const [hudResults, setHudResults] = useState<
-    HudDetectionResult[]
-  >([]);
+  const [hudResults, setHudResults] =
+    useState<HudDetectionResult[]>([]);
 
-  const [ocrResults, setOcrResults] = useState<
-    HudReadingResult[]
-  >([]);
+  const [ocrResults, setOcrResults] =
+    useState<HudReadingResult[]>([]);
 
   const [
     selectedFrameIndex,
@@ -189,6 +237,14 @@ export default function VideoFramesPage() {
   const selectedOcr =
     ocrResults[selectedFrameIndex];
 
+  const drivingAnalysis = useMemo(() => {
+    if (ocrResults.length === 0) {
+      return null;
+    }
+
+    return analyzeDrivingFromVideo(ocrResults);
+  }, [ocrResults]);
+
   const estimatedFrames =
     mode === "quick"
       ? 5
@@ -213,9 +269,9 @@ export default function VideoFramesPage() {
         startSeconds >= 0 &&
         endSeconds > startSeconds &&
         endSeconds <= duration &&
-        intervalSeconds >= 2 &&
-        intervalSeconds <= 30 &&
-        estimatedFrames >= 1 &&
+        intervalSeconds >= MIN_INTERVAL &&
+        intervalSeconds <= MAX_INTERVAL &&
+        estimatedFrames >= 2 &&
         estimatedFrames <= MAX_FRAMES;
 
   function resetResults() {
@@ -278,6 +334,7 @@ export default function VideoFramesPage() {
   ) {
     event.preventDefault();
     event.stopPropagation();
+
     setDragging(false);
 
     if (!loading) {
@@ -301,8 +358,7 @@ export default function VideoFramesPage() {
     }
   }
 
-  // Lê a duração do arquivo local.
-  // O vídeo não é enviado a um servidor.
+  // Le os metadados do video localmente.
 
   useEffect(() => {
     if (!file) {
@@ -503,11 +559,12 @@ export default function VideoFramesPage() {
         </h1>
 
         <p className="mt-4 text-slate-400">
-          Extraia imagens da volta e reconheça
-          velocidade e marcha automaticamente.
+          Extraia imagens do vídeo, reconheça
+          velocidade e marcha e visualize
+          mudanças entre amostras.
         </p>
 
-        {/* ENVIO DO VÍDEO */}
+        {/* SECAO 1: VIDEO */}
 
         <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
           <h2 className="text-xl font-bold">
@@ -598,7 +655,7 @@ export default function VideoFramesPage() {
           )}
         </section>
 
-        {/* CONFIGURAÇÃO */}
+        {/* SECAO 2: CONFIGURACAO */}
 
         <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
           <h2 className="text-xl font-bold">
@@ -606,8 +663,9 @@ export default function VideoFramesPage() {
           </h2>
 
           <p className="mt-3 text-sm text-slate-400">
-            Escolha entre verificar cinco quadros
-            ou analisar amostras de toda a volta.
+            Escolha entre verificar cinco
+            quadros ou analisar amostras
+            de um intervalo do vídeo.
           </p>
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -647,12 +705,12 @@ export default function VideoFramesPage() {
               }`}
             >
               <p className="font-bold">
-                Volta completa
+                Volta completa ou trecho
               </p>
 
               <p className="mt-2 text-sm text-slate-400">
-                Imagens distribuídas pelo intervalo
-                selecionado
+                Escolha o início, o fim
+                e o intervalo entre imagens
               </p>
             </button>
           </div>
@@ -702,9 +760,9 @@ export default function VideoFramesPage() {
 
                 <input
                   type="number"
-                  min={2}
-                  max={30}
-                  step={1}
+                  min={MIN_INTERVAL}
+                  max={MAX_INTERVAL}
+                  step={0.5}
                   disabled={loading}
                   value={intervalSeconds}
                   onChange={(event) => {
@@ -729,18 +787,18 @@ export default function VideoFramesPage() {
 
           <p className="mt-4 text-sm text-amber-300">
             O reconhecimento é experimental.
-            Uma volta completa usa amostras
-            espaçadas, não todos os quadros
-            do vídeo. Quanto mais imagens,
-            maior o tempo de processamento.
+            Agora é possível selecionar
+            intervalos de 0,5 segundo,
+            respeitando o limite de
+            40 imagens por análise.
           </p>
 
           {!validRange && file && (
             <p className="mt-4 text-sm text-amber-300">
-              Confira o intervalo e a duração
-              do vídeo. No modo completo,
-              use de 2 a 30 segundos entre
-              capturas e no máximo 40 imagens.
+              Confira o início, fim e
+              intervalo. Use de 0,5 a
+              30 segundos entre capturas,
+              com no máximo 40 imagens.
             </p>
           )}
 
@@ -791,7 +849,7 @@ export default function VideoFramesPage() {
           )}
         </section>
 
-        {/* TABELA */}
+        {/* SECAO 3: LEITURAS OCR */}
 
         {ocrResults.length > 0 && (
           <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
@@ -800,9 +858,10 @@ export default function VideoFramesPage() {
             </h2>
 
             <p className="mt-3 text-sm text-slate-400">
-              Esta tabela contém leituras do
-              HUD realizadas por OCR. Ainda não
-              equivale à telemetria oficial do ACC.
+              Esta tabela contém leituras
+              do HUD realizadas por OCR.
+              Ainda não equivale à
+              telemetria oficial do ACC.
             </p>
 
             <div className="mt-5 overflow-x-auto">
@@ -857,16 +916,12 @@ export default function VideoFramesPage() {
                         </td>
 
                         <td className="p-3">
-                          {reading.speed.confidence.toFixed(
-                            1
-                          )}
+                          {reading.speed.confidence.toFixed(1)}
                           %
                         </td>
 
                         <td className="p-3">
-                          {reading.gear.confidence.toFixed(
-                            1
-                          )}
+                          {reading.gear.confidence.toFixed(1)}
                           %
                         </td>
                       </tr>
@@ -878,12 +933,161 @@ export default function VideoFramesPage() {
           </section>
         )}
 
-        {/* QUADROS */}
+        {/* SECAO 4: ANALISE INICIAL */}
+
+        {drivingAnalysis && (
+          <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
+            <h2 className="text-xl font-bold">
+              4. Análise inicial da pilotagem
+            </h2>
+
+            <p className="mt-3 text-sm text-slate-400">
+              Resumo descritivo produzido
+              automaticamente com as
+              leituras do HUD.
+            </p>
+
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <MetricCard
+                label="Velocidade mínima observada"
+                value={
+                  drivingAnalysis.minimumObservedSpeed === null
+                    ? "Não disponível"
+                    : `${drivingAnalysis.minimumObservedSpeed} km/h`
+                }
+              />
+
+              <MetricCard
+                label="Velocidade máxima observada"
+                value={
+                  drivingAnalysis.maximumObservedSpeed === null
+                    ? "Não disponível"
+                    : `${drivingAnalysis.maximumObservedSpeed} km/h`
+                }
+              />
+
+              <MetricCard
+                label="Velocidades identificadas"
+                value={
+                  `${drivingAnalysis.validSpeedSamples}` +
+                  `/${drivingAnalysis.totalSamples}`
+                }
+                detail="Amostras com leitura numérica"
+              />
+
+              <MetricCard
+                label="Marchas identificadas"
+                value={
+                  `${drivingAnalysis.validGearSamples}` +
+                  `/${drivingAnalysis.totalSamples}`
+                }
+                detail="Amostras com leitura numérica"
+              />
+            </div>
+
+            <div className="mt-6 rounded-xl border border-slate-700 bg-slate-950 p-5">
+              <h3 className="font-semibold text-cyan-400">
+                Intervalo observado
+              </h3>
+
+              <p className="mt-2 text-sm text-slate-300">
+                {drivingAnalysis.durationSeconds.toFixed(3)}{" "}
+                segundos entre a primeira
+                e a última amostra.
+              </p>
+
+              <p className="mt-2 text-xs text-slate-500">
+                Esse intervalo não representa
+                necessariamente a duração
+                total do vídeo ou da volta.
+              </p>
+            </div>
+
+            <div className="mt-6">
+              <h3 className="text-lg font-bold">
+                Mudanças entre amostras
+              </h3>
+
+              <p className="mt-2 text-sm text-slate-400">
+                As diferenças abaixo não
+                indicam o instante exato
+                de uma frenagem, aceleração
+                ou troca de marcha.
+              </p>
+
+              {drivingAnalysis.observations.length === 0 ? (
+                <p className="mt-4 rounded-xl bg-slate-950 p-4 text-sm text-slate-400">
+                  Não há amostras suficientes
+                  para mostrar mudanças.
+                </p>
+              ) : (
+                <div className="mt-4 max-h-96 overflow-y-auto rounded-xl border border-slate-700 bg-slate-950">
+                  {drivingAnalysis.observations.map(
+                    (observation, index) => (
+                      <div
+                        key={`${observation.startSeconds}-${observation.endSeconds}-${observation.type}-${index}`}
+                        className="border-b border-slate-800 p-4 last:border-b-0"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-cyan-400">
+                            {observationLabel(
+                              observation
+                            )}
+                          </p>
+
+                          <p className="text-xs text-slate-500">
+                            {formatTime(
+                              observation.startSeconds
+                            )}
+                            {" até "}
+                            {formatTime(
+                              observation.endSeconds
+                            )}
+                          </p>
+                        </div>
+
+                        <p className="mt-2 text-sm text-slate-300">
+                          {observation.description}
+                        </p>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 rounded-xl border border-amber-800 bg-slate-950 p-5">
+              <h3 className="font-semibold text-amber-300">
+                Limitações desta análise
+              </h3>
+
+              <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-slate-300">
+                {drivingAnalysis.warnings.map(
+                  (warning, index) => (
+                    <li key={`${index}-${warning}`}>
+                      {warning}
+                    </li>
+                  )
+                )}
+              </ul>
+            </div>
+
+            <p className="mt-5 text-sm text-slate-400">
+              Amostras mais próximas
+              melhoram a resolução temporal,
+              mas ainda não substituem
+              dados de frenagem, aceleração
+              e trajetória.
+            </p>
+          </section>
+        )}
+
+        {/* SECAO 5: QUADROS */}
 
         {frames.length > 0 && (
           <section className="mt-8">
             <h2 className="text-xl font-bold">
-              4. Quadros da análise
+              5. Quadros da análise
             </h2>
 
             <p className="mt-3 text-sm text-slate-400">
@@ -899,9 +1103,7 @@ export default function VideoFramesPage() {
                     key={`${frame.timeSeconds}-${index}`}
                     type="button"
                     onClick={() =>
-                      setSelectedFrameIndex(
-                        index
-                      )
+                      setSelectedFrameIndex(index)
                     }
                     className={`overflow-hidden rounded-xl border-2 bg-slate-900 text-left ${
                       selectedFrameIndex === index
@@ -935,12 +1137,12 @@ export default function VideoFramesPage() {
           </section>
         )}
 
-        {/* DETALHES */}
+        {/* SECAO 6: CONFERIR HUD */}
 
         {selectedFrame && selectedHud && (
           <section className="mt-8 rounded-2xl border border-slate-700 bg-slate-900 p-6">
             <h2 className="text-xl font-bold">
-              5. Conferir leitura do HUD
+              6. Conferir leitura do HUD
             </h2>
 
             <p className="mt-3 text-slate-400">
@@ -972,9 +1174,7 @@ export default function VideoFramesPage() {
               </p>
 
               <img
-                src={
-                  selectedFrame.imageDataUrl
-                }
+                src={selectedFrame.imageDataUrl}
                 alt="Imagem do ACC"
                 className="w-full rounded-lg"
               />
@@ -988,27 +1188,16 @@ export default function VideoFramesPage() {
                     className="rounded-xl border border-slate-700 bg-slate-950 p-4"
                   >
                     <p className="font-semibold text-cyan-400">
-                      {
-                        REGION_LABELS[
-                          crop.name
-                        ]
-                      }
+                      {REGION_LABELS[crop.name]}
                     </p>
 
                     <div className="mt-4 flex min-h-32 items-center justify-center overflow-hidden rounded-lg bg-black p-3">
                       <img
-                        src={
-                          crop.imageDataUrl
-                        }
-                        alt={
-                          REGION_LABELS[
-                            crop.name
-                          ]
-                        }
+                        src={crop.imageDataUrl}
+                        alt={REGION_LABELS[crop.name]}
                         className="max-h-64 max-w-full object-contain"
                         style={{
-                          imageRendering:
-                            "pixelated",
+                          imageRendering: "pixelated",
                         }}
                       />
                     </div>
