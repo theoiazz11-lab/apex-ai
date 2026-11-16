@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   ResponsiveContainer,
   LineChart,
@@ -453,12 +454,12 @@ export default function AnalyzePage() {
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-16 text-white">
       <div className="mx-auto max-w-4xl">
-        <a
+        <Link
           href="/"
           className="text-slate-400 hover:text-white"
         >
           ← Voltar ao início
-        </a>
+        </Link>
 
         <p className="mt-12 font-bold tracking-widest text-cyan-400">
           APEX AI

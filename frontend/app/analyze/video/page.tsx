@@ -301,25 +301,17 @@ export default function VideoAnalysisPage() {
   // para reproduzir no navegador.
 
   useEffect(() => {
-    if (!file) {
-      setVideoUrl("");
-      return;
-    }
-
-    const url = URL.createObjectURL(file);
-
-    setVideoUrl(url);
-
     return () => {
-      URL.revokeObjectURL(url);
+      if (videoUrl) {
+        URL.revokeObjectURL(videoUrl);
+      }
     };
-  }, [file]);
+  }, [videoUrl]);
 
   // Leitura dos metadados do video.
 
   useEffect(() => {
     if (!file) {
-      setMetadata(null);
       return;
     }
 
@@ -374,9 +366,17 @@ export default function VideoAnalysisPage() {
       return;
     }
 
-    setFile(
-      event.target.files?.[0] ?? null
+    const selectedFile =
+      event.target.files?.[0] ?? null;
+
+    setFile(selectedFile);
+    setVideoUrl(
+      selectedFile
+        ? URL.createObjectURL(selectedFile)
+        : ""
     );
+    setMetadata(null);
+    setLoading(Boolean(selectedFile));
 
     setCurrentTime(0);
     setStartSeconds(0);

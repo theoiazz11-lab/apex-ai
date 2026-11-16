@@ -317,6 +317,7 @@ export default function VideoFramesPage() {
     }
 
     setDuration(null);
+    setMetadataLoading(true);
     setFile(selectedFile);
     resetResults();
   }
@@ -351,6 +352,7 @@ export default function VideoFramesPage() {
 
     setFile(null);
     setDuration(null);
+    setMetadataLoading(false);
     resetResults();
 
     if (fileInputRef.current) {
@@ -362,8 +364,6 @@ export default function VideoFramesPage() {
 
   useEffect(() => {
     if (!file) {
-      setDuration(null);
-      setMetadataLoading(false);
       return;
     }
 
@@ -374,9 +374,6 @@ export default function VideoFramesPage() {
 
     const url =
       URL.createObjectURL(file);
-
-    setMetadataLoading(true);
-    setDuration(null);
 
     video.preload = "metadata";
     video.muted = true;

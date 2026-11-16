@@ -3,21 +3,15 @@
  * APEX AI VISION
  * HUD Detector - Assetto Corsa Competizione
  *
- * Recortes atuais:
- * - Marcha
- * - Velocidade
- * - Painel completo
+ * Responsabilidades:
+ * - Recortar velocidade, marcha e painel
+ * - Recortar a area experimental dos pedais
+ * - Gerar uma visao ampliada para diagnostico
  *
- * Novo recurso experimental:
- * - Regiao dos indicadores de pedal
+ * Este modulo nao calcula porcentagens
+ * de freio ou acelerador.
  *
- * O recorte experimental dos pedais
- * e separado dos recortes existentes
- * para manter a compatibilidade com
- * hudReader.ts e frames/page.tsx.
- *
- * Este modulo extrai imagens.
- * Nao interpreta porcentagens de pedal.
+ * Os recortes originais do OCR sao preservados.
  */
 
 import type {
@@ -51,13 +45,6 @@ export type HudDetectionResult = {
   crops: HudCrop[];
 };
 
-/**
- * Regiao experimental dos pedais.
- *
- * Ainda nao separamos acelerador
- * e freio porque precisamos conferir
- * o recorte em diferentes instantes.
- */
 export type PedalRegionName = "pedals";
 
 export type PedalRegion = {
@@ -75,28 +62,31 @@ export type PedalCrop = {
   height: number;
 };
 
+export type PedalContextCrop = {
+  name: "pedal-context";
+  imageDataUrl: string;
+  width: number;
+  height: number;
+};
+
 export type PedalDetectionResult = {
   timeSeconds: number;
   originalWidth: number;
   originalHeight: number;
   crop: PedalCrop;
+  contextCrop: PedalContextCrop;
 };
 
 /**
- * Coordenadas normalizadas:
+ * Coordenadas normalizadas entre 0 e 1.
  *
- * x e y: posicao inicial
- * width e height: dimensoes
+ * Estas regioes ja sao utilizadas
+ * pelo reconhecimento de velocidade
+ * e marcha.
  *
- * Todos os valores ficam entre 0 e 1.
- *
- * Regioes baseadas no HUD utilizado
- * nos videos de teste do ACC.
- *
- * IMPORTANTE:
- * As tres regioes abaixo permanecem
- * exatamente iguais as anteriores.
+ * Nao alterar sem validar o OCR.
  */
+
 export const ACC_HUD_REGIONS: HudRegion[] = [
   {
     name: "gear",
@@ -122,24 +112,43 @@ export const ACC_HUD_REGIONS: HudRegion[] = [
 ];
 
 /**
- * Novo recorte experimental.
+ * Recorte experimental original.
  *
- * Abrange a parte inferior direita
- * do HUD, incluindo a area abaixo
- * do velocimetro.
+ * Esta regiao apresenta configuracoes
+ * como TC e ABS no video de teste.
  *
- * Os valores sao uma estimativa inicial.
- * Precisamos confirmar visualmente
- * se as duas barras aparecem completas.
- *
- * Nao modifica ACC_HUD_REGIONS.
+ * Nao devemos interpretar suas cores
+ * como porcentagens dos pedais.
  */
+
 export const ACC_PEDAL_REGION: PedalRegion = {
   name: "pedals",
   x: 0.845,
   y: 0.895,
   width: 0.150,
   height: 0.085,
+};
+
+/**
+ * Novo recorte contextual.
+ *
+ * Inclui uma area maior do painel
+ * inferior direito.
+ *
+ * Objetivo: localizar visualmente
+ * os verdadeiros indicadores de
+ * entrada do acelerador e freio.
+ *
+ * As coordenadas ainda sao
+ * experimentais.
+ */
+
+export const ACC_PEDAL_CONTEXT_REGION = {
+  name: "pedal-context" as const,
+  x: 0.66,
+  y: 0.69,
+  width: 0.33,
+  height: 0.29,
 };
 
 type NormalizedRegion = {
@@ -153,6 +162,12 @@ type NormalizedRegion = {
 type PixelRegion = {
   x: number;
   y: number;
+  width: number;
+  height: number;
+};
+
+type ImageCrop = {
+  imageDataUrl: string;
   width: number;
   height: number;
 };
@@ -175,18 +190,6 @@ function isValidRegion(
     region.height > 0 &&
     region.x + region.width <= 1 &&
     region.y + region.height <= 1
-  );
-}
-
-export function getHudRegionPixels(
-  region: HudRegion,
-  imageWidth: number,
-  imageHeight: number
-): PixelRegion {
-  return calculateRegionPixels(
-    region,
-    imageWidth,
-    imageHeight
   );
 }
 
@@ -248,6 +251,36 @@ function calculateRegionPixels(
   };
 }
 
+/**
+ * API publica utilizada pelos
+ * modulos existentes.
+ */
+
+export function getHudRegionPixels(
+  region: HudRegion,
+  imageWidth: number,
+  imageHeight: number
+): PixelRegion {
+  return calculateRegionPixels(
+    region,
+    imageWidth,
+    imageHeight
+  );
+}
+
+function validateFrame(
+  frame: ExtractedFrame
+): void {
+  if (
+    !frame.imageDataUrl ||
+    !Number.isFinite(frame.timeSeconds)
+  ) {
+    throw new Error(
+      "O quadro fornecido é inválido."
+    );
+  }
+}
+
 function loadImage(
   imageDataUrl: string
 ): Promise<HTMLImageElement> {
@@ -263,7 +296,9 @@ function loadImage(
 
     const image = new Image();
 
-    image.onload = () => resolve(image);
+    image.onload = () => {
+      resolve(image);
+    };
 
     image.onerror = () => {
       reject(
@@ -281,11 +316,7 @@ function cropNormalizedRegion(
   image: HTMLImageElement,
   region: NormalizedRegion,
   scale = 4
-): {
-  imageDataUrl: string;
-  width: number;
-  height: number;
-} {
+): ImageCrop {
   const pixels = calculateRegionPixels(
     region,
     image.naturalWidth,
@@ -327,11 +358,9 @@ function cropNormalizedRegion(
     canvas.height
   );
 
-  const imageDataUrl =
-    canvas.toDataURL("image/png");
-
-  const result = {
-    imageDataUrl,
+  const result: ImageCrop = {
+    imageDataUrl:
+      canvas.toDataURL("image/png"),
     width: canvas.width,
     height: canvas.height,
   };
@@ -342,55 +371,51 @@ function cropNormalizedRegion(
   return result;
 }
 
-function cropImage(
+function cropHudImage(
   image: HTMLImageElement,
-  region: HudRegion,
-  scale = 4
+  region: HudRegion
 ): HudCrop {
   return {
     name: region.name,
     ...cropNormalizedRegion(
       image,
-      region,
-      scale
+      region
     ),
   };
 }
 
 function cropPedalImage(
-  image: HTMLImageElement,
-  region: PedalRegion,
-  scale = 4
+  image: HTMLImageElement
 ): PedalCrop {
   return {
-    name: region.name,
+    name: "pedals",
     ...cropNormalizedRegion(
       image,
-      region,
-      scale
+      ACC_PEDAL_REGION
     ),
   };
 }
 
-function validateFrame(
-  frame: ExtractedFrame
-): void {
-  if (
-    !frame.imageDataUrl ||
-    !Number.isFinite(frame.timeSeconds)
-  ) {
-    throw new Error(
-      "O quadro fornecido é inválido."
-    );
-  }
+function cropPedalContext(
+  image: HTMLImageElement
+): PedalContextCrop {
+  return {
+    name: "pedal-context",
+    ...cropNormalizedRegion(
+      image,
+      ACC_PEDAL_CONTEXT_REGION,
+      3
+    ),
+  };
 }
 
 /**
- * API existente.
+ * Detector original do HUD.
  *
- * Preserva exatamente os tres
- * recortes utilizados pelo OCR.
+ * Retorna as tres regioes existentes:
+ * marcha, velocidade e painel.
  */
+
 export async function detectAccHud(
   frame: ExtractedFrame
 ): Promise<HudDetectionResult> {
@@ -401,7 +426,8 @@ export async function detectAccHud(
   );
 
   const crops = ACC_HUD_REGIONS.map(
-    (region) => cropImage(image, region)
+    (region) =>
+      cropHudImage(image, region)
   );
 
   return {
@@ -412,34 +438,30 @@ export async function detectAccHud(
   };
 }
 
-/**
- * API existente em lote.
- */
 export async function detectAccHudBatch(
   frames: ExtractedFrame[]
 ): Promise<HudDetectionResult[]> {
   const results: HudDetectionResult[] = [];
 
   for (const frame of frames) {
-    const result = await detectAccHud(
-      frame
+    results.push(
+      await detectAccHud(frame)
     );
-
-    results.push(result);
   }
 
   return results;
 }
 
 /**
- * NOVA API EXPERIMENTAL.
+ * Detector experimental de pedais.
  *
- * Recorta a area inferior do HUD,
- * onde esperamos encontrar os
- * indicadores relacionados aos pedais.
+ * Retorna:
+ * - crop: recorte pequeno original
+ * - contextCrop: nova visao ampliada
  *
- * Nenhuma porcentagem e calculada.
+ * Nenhum valor de pedal e estimado.
  */
+
 export async function detectAccPedals(
   frame: ExtractedFrame
 ): Promise<PedalDetectionResult> {
@@ -449,25 +471,20 @@ export async function detectAccPedals(
     frame.imageDataUrl
   );
 
-  const crop = cropPedalImage(
-    image,
-    ACC_PEDAL_REGION
-  );
+  const crop = cropPedalImage(image);
+
+  const contextCrop =
+    cropPedalContext(image);
 
   return {
     timeSeconds: frame.timeSeconds,
     originalWidth: image.naturalWidth,
     originalHeight: image.naturalHeight,
     crop,
+    contextCrop,
   };
 }
 
-/**
- * Nova API experimental em lote.
- *
- * Pode ser chamada futuramente
- * pela pagina de analise de video.
- */
 export async function detectAccPedalsBatch(
   frames: ExtractedFrame[]
 ): Promise<PedalDetectionResult[]> {
